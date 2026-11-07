@@ -1,0 +1,8 @@
+{
+  "name": "bot-dashboard",
+  "label": "Bot Dashboard",
+  "description": "The selected bot's profile, scheduled jobs, tasks and projects",
+  "icon": "LayoutDashboard",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}
