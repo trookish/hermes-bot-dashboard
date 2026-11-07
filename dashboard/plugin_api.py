@@ -19,6 +19,9 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from panel_store import Panel, PanelError  # noqa: E402
+
 router = APIRouter()
 
 HERMES_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "hermes"
@@ -167,7 +170,83 @@ def bot_summary(id: str = Query("", max_length=64)) -> dict:
         "tasks": _tasks(bot),
         "projects": _projects(bot),
         "brain": BRAIN.is_dir(),
+        "panel": Panel(home).summary(),
     }
+
+
+def _panel(bot: str) -> Panel:
+    return Panel(_bot_home(bot))
+
+
+def _guard(fn):
+    try:
+        return fn()
+    except PanelError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class LayoutBody(BaseModel):
+    bot: str
+    order: Optional[list[str]] = None
+    hidden: Optional[list[str]] = None
+
+
+@router.post("/panel/layout")
+def panel_layout(body: LayoutBody) -> dict:
+    return {"ok": True, "layout": _guard(lambda: _panel(body.bot).set_layout(body.order, body.hidden))}
+
+
+class NoteBody(BaseModel):
+    bot: str
+    id: Optional[str] = None
+    text: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
+@router.post("/panel/note")
+def panel_note_add(body: NoteBody) -> dict:
+    return {"ok": True, "note": _guard(lambda: _panel(body.bot).add_note(body.text or "", author="turki"))}
+
+
+@router.post("/panel/note/update")
+def panel_note_update(body: NoteBody) -> dict:
+    return {"ok": True, "note": _guard(lambda: _panel(body.bot).update_note(
+        body.id or "", text=body.text, pinned=body.pinned, author="turki"))}
+
+
+@router.post("/panel/note/delete")
+def panel_note_delete(body: NoteBody) -> dict:
+    if not _panel(body.bot).delete_note(body.id or ""):
+        raise HTTPException(404, "Note not found.")
+    return {"ok": True}
+
+
+class WidgetBody(BaseModel):
+    bot: str
+    id: Optional[str] = None
+    title: Optional[str] = None
+    html: Optional[str] = None
+    height: Optional[int] = None
+
+
+@router.post("/panel/widget")
+def panel_widget_save(body: WidgetBody) -> dict:
+    panel = _panel(body.bot)
+    cur = next((w for w in panel.widgets(with_html=True) if w["id"] == body.id), None) if body.id else None
+    if body.id and cur is None:
+        raise HTTPException(404, "Widget not found.")
+    entry = _guard(lambda: panel.save_widget(
+        title=body.title or (cur or {}).get("title", ""),
+        html=body.html if body.html is not None else (cur or {}).get("html", ""),
+        wid=body.id, height=body.height, author="turki"))
+    return {"ok": True, "widget": entry}
+
+
+@router.post("/panel/widget/remove")
+def panel_widget_remove(body: WidgetBody) -> dict:
+    if not _panel(body.bot).remove_widget(body.id or ""):
+        raise HTTPException(404, "Widget not found.")
+    return {"ok": True}
 
 
 def _brain_tasks():

@@ -90,6 +90,28 @@ const CSS = `
 .bd-skeleton{height:64px;border-radius:12px;background:linear-gradient(90deg,var(--ui-bg-secondary),var(--ui-bg-tertiary),var(--ui-bg-secondary));
   background-size:200% 100%;animation:bd-sh 1.2s infinite}
 @keyframes bd-sh{to{background-position:-200% 0}}
+.bd-iconbtn.on{background:var(--bd-accent);border-color:var(--bd-accent);color:#fff}
+.bd-textarea{width:100%;resize:vertical;min-height:38px;font-family:inherit;line-height:1.4}
+.bd-textarea.mono{font-family:var(--font-mono,ui-monospace,monospace);font-size:11.5px}
+.bd-note-add{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.bd-note{padding:8px 10px;border-radius:9px;border:1px solid var(--ui-stroke-tertiary,var(--ui-stroke-secondary));background:var(--ui-bg-secondary,transparent)}
+.bd-note.pinned{border-color:color-mix(in srgb,var(--bd-accent) 55%,transparent)}
+.bd-note-meta{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:5px}
+.bd-note-time{font-size:11px;color:var(--ui-text-tertiary)}
+.bd-note-actions{margin-left:auto;display:flex;gap:3px}
+.bd-note-text{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ui-text-primary)}
+.bd-mini{border:1px solid transparent;background:transparent;color:var(--ui-text-secondary);border-radius:6px;padding:1px 6px;font:inherit;font-size:11.5px;cursor:pointer}
+.bd-mini:hover:not(:disabled){border-color:var(--ui-stroke-secondary);color:var(--ui-text-primary)}
+.bd-mini.danger:hover:not(:disabled){color:var(--ui-red);border-color:color-mix(in srgb,var(--ui-red) 45%,transparent)}
+.bd-mini:disabled{opacity:.4;cursor:default}
+.bd-frame{display:block;width:100%;border:0;background:transparent;border-radius:8px}
+.bd-editor{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;border:1.5px solid var(--bd-accent);
+  background:color-mix(in srgb,var(--bd-accent) 6%,var(--ui-bg-card,var(--ui-bg-elevated)))}
+.bd-editor-title{display:flex;align-items:center;gap:8px;font-weight:650}
+.bd-layout-row{display:flex;align-items:center;gap:2px;padding:5px 8px;border-radius:8px;border:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-elevated)}
+.bd-layout-row.off .bd-layout-name{color:var(--ui-text-tertiary);text-decoration:line-through}
+.bd-layout-name{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bd-hint{font-size:11.5px;color:var(--ui-text-tertiary)}
 `
 
 function ensureStyle() {
@@ -238,11 +260,24 @@ function Empty({ children }) {
 
 // ---------------------------------------------------------------- widgets
 
-function Hero({ bot, loading, onRefresh }) {
+function Hero({ bot, loading, onRefresh, onCustomize, customizing }) {
   const initials = (bot.name || bot.id || '?').trim().slice(0, 1).toUpperCase()
   return h(
     'header',
     { className: 'bd-hero' },
+    h(
+      'button',
+      {
+        className: `bd-iconbtn${customizing ? ' on' : ''}`,
+        type: 'button',
+        style: { right: 44 },
+        title: 'Customize this panel',
+        'aria-label': 'Customize this panel',
+        'aria-pressed': !!customizing,
+        onClick: onCustomize
+      },
+      '✎'
+    ),
     h(
       'button',
       {
@@ -262,7 +297,7 @@ function Hero({ bot, loading, onRefresh }) {
         : h('div', { className: 'bd-avatar bd-avatar-fallback' }, initials),
       h(
         'div',
-        { style: { minWidth: 0, paddingRight: 30 } },
+        { style: { minWidth: 0, paddingRight: 70 } },
         h('h2', { className: 'bd-name' }, bot.name || bot.id),
         bot.section
           ? h('div', { className: 'bd-section' }, h('span', { className: 'bd-dot' }), bot.section)
@@ -560,6 +595,284 @@ function ProjectsWidget({ bot }) {
   )
 }
 
+// ---------------------------------------------------------------- notes
+
+function NotesWidget({ bot, onChanged }) {
+  const notes = bot.panel?.notes || []
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [draft, setDraft] = useState('')
+
+  const call = async (path, body, failMsg) => {
+    setBusy(true)
+    try {
+      await rest(path, { method: 'POST', body: { bot: bot.id, ...body } })
+      await onChanged()
+      return true
+    } catch (err) {
+      host.notify?.({ kind: 'error', message: `${failMsg}: ${errorText(err)}` })
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const add = async e => {
+    e.preventDefault()
+    if (!text.trim()) return
+    if (await call('/panel/note', { text }, 'Could not save the note')) setText('')
+  }
+
+  const save = async id => {
+    if (await call('/panel/note/update', { id, text: draft }, 'Could not update the note')) setEditing(null)
+  }
+
+  const remove = note => {
+    if (window.confirm('Delete this note?')) call('/panel/note/delete', { id: note.id }, 'Could not delete the note')
+  }
+
+  return h(
+    Card,
+    {
+      id: 'notes',
+      botId: bot.id,
+      title: 'Notes',
+      count: notes.length,
+      info: 'Notes shared between you and this bot. You can write here; the bot reads and writes the same notes with its bot_panel tool. Pinned notes stay on top.'
+    },
+    h(
+      'form',
+      { className: 'bd-note-add', onSubmit: add },
+      h('textarea', {
+        className: 'bd-input bd-textarea',
+        placeholder: 'Write a note for this bot',
+        'aria-label': 'New note',
+        rows: 2,
+        value: text,
+        maxLength: 4000,
+        onChange: e => setText(e.target.value),
+        onKeyDown: e => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) add(e)
+        }
+      }),
+      h('button', { type: 'submit', className: 'bd-btn primary', disabled: busy || !text.trim(), title: 'Save note (Ctrl+Enter)' }, 'Add note')
+    ),
+    notes.length === 0
+      ? h(Empty, null, 'No notes yet. Add one here, or ask the bot to leave one.')
+      : notes.map(note =>
+          h(
+            'div',
+            { className: `bd-note${note.pinned ? ' pinned' : ''}`, key: note.id },
+            h(
+              'div',
+              { className: 'bd-note-meta' },
+              h('span', { className: `bd-pill ${note.author === 'bot' ? 'ok' : 'muted'}` }, note.author === 'bot' ? `@${bot.id}` : 'You'),
+              note.pinned ? h('span', { className: 'bd-pill warn' }, 'Pinned') : null,
+              h('span', { className: 'bd-note-time', title: note.updated }, relative(note.updated)),
+              h(
+                'span',
+                { className: 'bd-note-actions' },
+                h('button', { type: 'button', className: 'bd-mini', title: note.pinned ? 'Unpin' : 'Pin to top', disabled: busy,
+                  onClick: () => call('/panel/note/update', { id: note.id, pinned: !note.pinned }, 'Could not pin the note') }, note.pinned ? 'Unpin' : 'Pin'),
+                h('button', { type: 'button', className: 'bd-mini', title: 'Edit note', disabled: busy,
+                  onClick: () => { setEditing(note.id); setDraft(note.text) } }, 'Edit'),
+                h('button', { type: 'button', className: 'bd-mini danger', title: 'Delete note', disabled: busy, onClick: () => remove(note) }, 'Delete')
+              )
+            ),
+            editing === note.id
+              ? h(
+                  'div',
+                  null,
+                  h('textarea', { className: 'bd-input bd-textarea', rows: 4, value: draft, maxLength: 4000, 'aria-label': 'Edit note',
+                    onChange: e => setDraft(e.target.value) }),
+                  h('div', { style: { display: 'flex', gap: 6, marginTop: 6, justifyContent: 'flex-end' } },
+                    h('button', { type: 'button', className: 'bd-btn', onClick: () => setEditing(null) }, 'Cancel'),
+                    h('button', { type: 'button', className: 'bd-btn primary', disabled: busy || !draft.trim(), onClick: () => save(note.id) }, 'Save'))
+                )
+              : h('div', { className: 'bd-note-text' }, note.text)
+          )
+        )
+  )
+}
+
+// ---------------------------------------------------------------- custom widgets
+
+const THEME_VARS = [
+  ['--foreground', '--ui-text-primary'],
+  ['--muted-foreground', '--ui-text-secondary'],
+  ['--border', '--ui-stroke-secondary'],
+  ['--accent', '--ui-accent'],
+  ['--card', '--ui-bg-elevated'],
+  ['--green', '--ui-green'],
+  ['--yellow', '--ui-yellow'],
+  ['--red', '--ui-red']
+]
+
+function themeCss(accent) {
+  const cs = getComputedStyle(document.documentElement)
+  const body = getComputedStyle(document.body)
+  const vars = THEME_VARS.map(([k, src]) => {
+    const v = k === '--accent' && accent ? accent : cs.getPropertyValue(src).trim()
+    return v ? `${k}:${v};` : ''
+  }).join('')
+  return `:root{${vars}color-scheme:light dark}html,body{margin:0;padding:0;background:transparent;color:var(--foreground);font-family:${body.fontFamily};font-size:13px}`
+}
+
+// Reports height to the parent and scales content wider than the frame down to fit.
+const FIT_SCRIPT = `<script>(function(){var id=%ID%;function fit(){var b=document.body;if(!b)return;b.style.zoom='';var w=document.documentElement.clientWidth,s=Math.max(b.scrollWidth,document.documentElement.scrollWidth);var z=s>w+2?w/s:1;if(z<1)b.style.zoom=z;var hgt=Math.ceil(document.documentElement.scrollHeight);parent.postMessage({bdWidget:id,height:hgt},'*')}window.addEventListener('load',fit);window.addEventListener('resize',fit);new MutationObserver(function(){requestAnimationFrame(fit)}).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});setTimeout(fit,50);setTimeout(fit,600)})();<\/script>`
+
+function buildDoc(widget, accent) {
+  const html = widget.html || ''
+  const head = `<meta charset="utf-8"><style>${themeCss(accent)}</style>`
+  const script = FIT_SCRIPT.replace('%ID%', JSON.stringify(widget.id))
+  if (/<html[\s>]/i.test(html)) {
+    let doc = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + head) : html.replace(/<html[^>]*>/i, m => m + '<head>' + head + '</head>')
+    doc = /<\/body>/i.test(doc) ? doc.replace(/<\/body>/i, script + '</body>') : doc + script
+    return doc
+  }
+  return `<!doctype html><html><head>${head}</head><body>${html}${script}</body></html>`
+}
+
+function WidgetFrame({ widget, accent }) {
+  const [height, setHeight] = useState(widget.height || 120)
+  const doc = useMemo(() => buildDoc(widget, accent), [widget.html, widget.id, accent])
+  useEffect(() => {
+    if (widget.height) return undefined
+    const onMsg = e => {
+      if (e.data && e.data.bdWidget === widget.id && typeof e.data.height === 'number') {
+        setHeight(Math.max(40, Math.min(e.data.height, 2400)))
+      }
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, [widget.id, widget.height])
+  return h('iframe', {
+    className: 'bd-frame',
+    title: widget.title,
+    sandbox: 'allow-scripts',
+    srcDoc: doc,
+    style: { height: widget.height || height }
+  })
+}
+
+function CustomWidget({ bot, widget }) {
+  return h(
+    Card,
+    {
+      id: `w:${widget.id}`,
+      botId: bot.id,
+      title: widget.title,
+      info: `A custom widget ${widget.author === 'bot' ? `built by @${bot.id}` : 'you added'}. Ask the bot in chat to change it, or use Customize to edit its HTML. Last updated ${widget.updated || 'unknown'}.`
+    },
+    h(WidgetFrame, { widget, accent: bot.color })
+  )
+}
+
+function WidgetEditor({ bot, widget, onDone, onChanged }) {
+  const [title, setTitle] = useState(widget?.title || '')
+  const [html, setHtml] = useState(widget?.html || '')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    setBusy(true)
+    try {
+      await rest('/panel/widget', { method: 'POST', body: { bot: bot.id, id: widget?.id || null, title, html } })
+      await onChanged()
+      onDone()
+    } catch (err) {
+      host.notify?.({ kind: 'error', message: `Could not save the widget: ${errorText(err)}` })
+    } finally {
+      setBusy(false)
+    }
+  }
+  return h(
+    'div',
+    { className: 'bd-editor' },
+    h('div', { className: 'bd-editor-title' }, widget ? `Edit “${widget.title}”` : 'New widget'),
+    h('input', { className: 'bd-input', placeholder: 'Widget title', 'aria-label': 'Widget title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }),
+    h('textarea', { className: 'bd-input bd-textarea mono', rows: 9, placeholder: '<div>Widget HTML…</div>', 'aria-label': 'Widget HTML', value: html, spellCheck: false, onChange: e => setHtml(e.target.value) }),
+    h('div', { className: 'bd-hint' }, 'Tip: you can also ask the bot in chat, for example “add a weekly sleep chart to your panel”.'),
+    h('div', { style: { display: 'flex', gap: 6, justifyContent: 'flex-end' } },
+      h('button', { type: 'button', className: 'bd-btn', onClick: onDone }, 'Cancel'),
+      h('button', { type: 'button', className: 'bd-btn primary', disabled: busy || !title.trim() || !html.trim(), onClick: save }, busy ? 'Saving…' : 'Save widget'))
+  )
+}
+
+const CARD_LABELS = { profile: 'Profile', jobs: 'Scheduled jobs', tasks: 'Tasks', notes: 'Notes', projects: 'Projects' }
+
+function CustomizePanel({ bot, onChanged, onClose }) {
+  const panel = bot.panel || { layout: { order: [], hidden: [] }, widgets: [] }
+  const [order, setOrder] = useState(panel.layout.order)
+  const [hidden, setHidden] = useState(panel.layout.hidden)
+  const [editing, setEditing] = useState(undefined)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { setOrder(panel.layout.order); setHidden(panel.layout.hidden) }, [bot.id, panel.layout.order.join(), panel.layout.hidden.join()])
+
+  const widgetFor = key => panel.widgets.find(w => `w:${w.id}` === key)
+  const label = key => CARD_LABELS[key] || widgetFor(key)?.title || key
+
+  const persist = async (nextOrder, nextHidden) => {
+    setOrder(nextOrder)
+    setHidden(nextHidden)
+    setBusy(true)
+    try {
+      await rest('/panel/layout', { method: 'POST', body: { bot: bot.id, order: nextOrder, hidden: nextHidden } })
+      await onChanged()
+    } catch (err) {
+      host.notify?.({ kind: 'error', message: `Could not save the layout: ${errorText(err)}` })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const move = (i, d) => {
+    const j = i + d
+    if (j < 0 || j >= order.length) return
+    const next = order.slice()
+    ;[next[i], next[j]] = [next[j], next[i]]
+    persist(next, hidden)
+  }
+
+  const toggle = key => persist(order, hidden.includes(key) ? hidden.filter(k => k !== key) : [...hidden, key])
+
+  const removeWidget = async w => {
+    if (!window.confirm(`Remove the widget “${w.title}” from this panel?`)) return
+    try {
+      await rest('/panel/widget/remove', { method: 'POST', body: { bot: bot.id, id: w.id } })
+      await onChanged()
+    } catch (err) {
+      host.notify?.({ kind: 'error', message: `Could not remove the widget: ${errorText(err)}` })
+    }
+  }
+
+  if (editing !== undefined) {
+    return h(WidgetEditor, { bot, widget: editing, onChanged, onDone: () => setEditing(undefined) })
+  }
+
+  return h(
+    'div',
+    { className: 'bd-editor', role: 'region', 'aria-label': 'Customize this panel' },
+    h('div', { className: 'bd-editor-title' }, `Customize @${bot.id}'s panel`, h(Info, { text: 'Reorder cards with the arrows, hide the ones you do not need, and add or edit custom widgets. Changes save to this bot\'s profile, so the bot sees the same layout.' })),
+    order.map((key, i) => {
+      const w = widgetFor(key)
+      const isHidden = hidden.includes(key)
+      return h(
+        'div',
+        { className: `bd-layout-row${isHidden ? ' off' : ''}`, key },
+        h('span', { className: 'bd-layout-name' }, label(key), w ? h('span', { className: 'bd-pill muted', style: { marginLeft: 6 } }, 'Widget') : null),
+        h('button', { type: 'button', className: 'bd-mini', disabled: busy || i === 0, onClick: () => move(i, -1), title: 'Move up', 'aria-label': `Move ${label(key)} up` }, '↑'),
+        h('button', { type: 'button', className: 'bd-mini', disabled: busy || i === order.length - 1, onClick: () => move(i, 1), title: 'Move down', 'aria-label': `Move ${label(key)} down` }, '↓'),
+        key === 'profile' ? null : h('button', { type: 'button', className: 'bd-mini', disabled: busy, onClick: () => toggle(key) }, isHidden ? 'Show' : 'Hide'),
+        w ? h('button', { type: 'button', className: 'bd-mini', onClick: () => setEditing(w) }, 'Edit') : null,
+        w ? h('button', { type: 'button', className: 'bd-mini danger', onClick: () => removeWidget(w) }, 'Remove') : null
+      )
+    }),
+    h('div', { style: { display: 'flex', gap: 6, justifyContent: 'space-between', marginTop: 4 } },
+      h('button', { type: 'button', className: 'bd-btn', onClick: () => setEditing(null) }, '+ Add widget'),
+      h('button', { type: 'button', className: 'bd-btn primary', onClick: onClose }, 'Done'))
+  )
+}
+
 // ---------------------------------------------------------------- pane
 
 function useBotId() {
@@ -599,6 +912,9 @@ function BotDashboard() {
     return () => clearInterval(t)
   }, [load, botId])
 
+  const [customizing, setCustomizing] = useState(false)
+  useEffect(() => setCustomizing(false), [botId])
+
   const style = useMemo(() => (bot?.color ? { '--bd-accent': bot.color } : undefined), [bot?.color])
 
   if (!bot) {
@@ -616,16 +932,29 @@ function BotDashboard() {
     )
   }
 
+  const layout = bot.panel?.layout || { order: ['profile', 'jobs', 'tasks', 'notes', 'projects'], hidden: [] }
+  const widgets = bot.panel?.widgets || []
+  const cardFor = key => {
+    if (key === 'profile') return h(Hero, { key, bot, loading, onRefresh: load, onCustomize: () => setCustomizing(c => !c), customizing })
+    if (key === 'jobs') return h(JobsWidget, { key, botId: bot.id })
+    if (key === 'tasks') return h(TasksWidget, { key, bot, onChanged: load })
+    if (key === 'notes') return h(NotesWidget, { key, bot, onChanged: load })
+    if (key === 'projects') return h(ProjectsWidget, { key, bot })
+    const w = widgets.find(x => `w:${x.id}` === key)
+    return w ? h(CustomWidget, { key, bot, widget: w }) : null
+  }
+  const visible = layout.order.filter(k => k === 'profile' || !layout.hidden.includes(k))
+  const heroAt = visible.indexOf('profile')
+
   return h(
     'div',
     { className: 'bd', style, 'data-bot': bot.id },
-    h(Hero, { bot, loading, onRefresh: load }),
-    error ? h('div', { className: 'bd-error' }, `Showing the last loaded data. ${error}`) : null,
-    h(JobsWidget, { botId: bot.id }),
-    h(TasksWidget, { bot, onChanged: load }),
-    h(ProjectsWidget, { bot }),
-    bot.brain ? null : h('div', { className: 'bd-error' }, 'HermesBrain was not found, so tasks and projects are empty.'),
-    h('div', { className: 'bd-foot' }, `Follows the chat in focus · @${bot.id}`)
+    ...visible.slice(0, heroAt + 1).map(cardFor),
+    customizing ? h(CustomizePanel, { key: 'customize', bot, onChanged: load, onClose: () => setCustomizing(false) }) : null,
+    error ? h('div', { className: 'bd-error', key: 'err' }, `Showing the last loaded data. ${error}`) : null,
+    ...visible.slice(heroAt + 1).map(cardFor),
+    bot.brain ? null : h('div', { className: 'bd-error', key: 'brain' }, 'HermesBrain was not found, so tasks and projects are empty.'),
+    h('div', { className: 'bd-foot', key: 'foot' }, `Follows the chat in focus · @${bot.id}`)
   )
 }
 
