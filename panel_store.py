@@ -12,14 +12,26 @@ both always read and write the same files. Writes are atomic.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import secrets
+import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+
+try:
+    import msvcrt  # Windows
+except ImportError:  # pragma: no cover
+    msvcrt = None
+try:
+    import fcntl  # POSIX
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 BUILTIN = ["profile", "jobs", "tasks", "notes", "projects"]
 MAX_HTML = 200_000
@@ -43,23 +55,81 @@ class PanelError(ValueError):
     pass
 
 
+class PanelBusy(OSError):
+    """The panel files stayed locked by another process; safe to retry."""
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via a unique temp file, retrying the swap while a reader holds the target."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        for attempt in range(40):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                time.sleep(0.025 * (attempt + 1) if attempt < 10 else 0.25)
+        raise PanelBusy(f"{path.name} is locked by another program.")
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+
+
 class Panel:
     def __init__(self, home: Path):
         self.dir = Path(home) / "panel"
 
+    @contextlib.contextmanager
+    def _locked(self):
+        """Serialize writers across threads AND processes (agent + dashboard)."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with _LOCK:
+            fh = open(self.dir / ".lock", "a+b")
+            try:
+                deadline = time.monotonic() + 10
+                while True:
+                    try:
+                        if msvcrt:
+                            fh.seek(0)
+                            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        elif fcntl:
+                            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except OSError:
+                        if time.monotonic() > deadline:
+                            raise PanelBusy("The panel is busy; try again.")
+                        time.sleep(0.02)
+                try:
+                    yield
+                finally:
+                    with contextlib.suppress(OSError):
+                        if msvcrt:
+                            fh.seek(0)
+                            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                        elif fcntl:
+                            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
+
     # ------------------------------------------------------------ io
     def _read(self, name: str, default: Any) -> Any:
-        try:
-            return json.loads((self.dir / name).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return default
+        path = self.dir / name
+        for attempt in range(20):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return default
+            except PermissionError:
+                time.sleep(0.02 * (attempt + 1))
+            except (OSError, ValueError):
+                return default
+        raise PanelBusy(f"{name} is locked by another program.")
 
     def _write(self, name: str, data: Any) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
-        path = self.dir / name
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, path)
+        _atomic_write(self.dir / name, json.dumps(data, ensure_ascii=False, indent=1))
 
     # ------------------------------------------------------------ widgets
     def widgets(self, with_html: bool = False) -> list[dict]:
@@ -87,21 +157,35 @@ class Panel:
             raise PanelError("A widget needs HTML content.")
         if len(html) > MAX_HTML:
             raise PanelError(f"Widget HTML is over {MAX_HTML} characters.")
-        with _LOCK:
+        if height not in (None, "", 0):
+            try:
+                height = max(80, min(int(height), 2000))
+            except (TypeError, ValueError):
+                raise PanelError("Height must be a whole number of pixels.") from None
+        else:
+            height = None
+        with self._locked():
             items = self.widgets()
-            wid = wid or slug(title)
-            existing = next((w for w in items if w["id"] == wid), None)
-            if existing is None and len(items) >= MAX_WIDGETS:
-                raise PanelError(f"This panel already has {MAX_WIDGETS} custom widgets.")
+            ids = {w["id"] for w in items}
+            if wid:  # explicit update: must exist, never silently create
+                existing = next((w for w in items if w["id"] == wid), None)
+                if existing is None:
+                    raise PanelError("Widget not found.")
+            else:  # new widget: never overwrite one that shares a title
+                existing = None
+                base = slug(title)
+                wid = base
+                while wid in ids:
+                    wid = f"{base[:33]}-{secrets.token_hex(3)}"
+                if len(items) >= MAX_WIDGETS:
+                    raise PanelError(f"This panel already has {MAX_WIDGETS} custom widgets.")
             path = self._widget_path(wid)
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(html, encoding="utf-8")
-            os.replace(tmp, path)
+            _atomic_write(path, html)
             entry = existing or {"id": wid, "created": now()}
             entry.update({"title": title, "updated": now(), "author": author})
             if height:
-                entry["height"] = max(80, min(int(height), 2000))
+                entry["height"] = height
             if existing is None:
                 items.append(entry)
                 layout = self.layout()
@@ -113,7 +197,7 @@ class Panel:
             return entry
 
     def remove_widget(self, wid: str) -> bool:
-        with _LOCK:
+        with self._locked():
             items = self.widgets()
             keep = [w for w in items if w["id"] != wid]
             if len(keep) == len(items):
@@ -142,7 +226,7 @@ class Panel:
         return {"order": order, "hidden": [k for k in hidden if k in known and k != "profile"]}
 
     def set_layout(self, order: Optional[list] = None, hidden: Optional[list] = None) -> dict:
-        with _LOCK:
+        with self._locked():
             cur = self.layout()
             if order is not None:
                 cur["order"] = [str(k) for k in order]
@@ -154,7 +238,6 @@ class Panel:
     # ------------------------------------------------------------ notes
     def notes(self) -> list[dict]:
         items = [n for n in self._read("notes.json", []) if isinstance(n, dict) and n.get("id")]
-        items.sort(key=lambda n: (not n.get("pinned"), n.get("updated") or ""), reverse=False)
         pinned = [n for n in items if n.get("pinned")]
         rest = sorted([n for n in items if not n.get("pinned")], key=lambda n: n.get("updated") or "", reverse=True)
         return sorted(pinned, key=lambda n: n.get("updated") or "", reverse=True) + rest
@@ -165,7 +248,7 @@ class Panel:
             raise PanelError("A note needs text.")
         if len(text) > MAX_NOTE:
             raise PanelError(f"A note is limited to {MAX_NOTE} characters.")
-        with _LOCK:
+        with self._locked():
             items = self._read("notes.json", [])
             if len(items) >= MAX_NOTES:
                 raise PanelError(f"This panel already holds {MAX_NOTES} notes.")
@@ -177,7 +260,7 @@ class Panel:
 
     def update_note(self, nid: str, *, text: Optional[str] = None, pinned: Optional[bool] = None,
                     author: Optional[str] = None) -> dict:
-        with _LOCK:
+        with self._locked():
             items = self._read("notes.json", [])
             note = next((n for n in items if n.get("id") == nid), None)
             if note is None:
@@ -198,7 +281,7 @@ class Panel:
             return note
 
     def delete_note(self, nid: str) -> bool:
-        with _LOCK:
+        with self._locked():
             items = self._read("notes.json", [])
             keep = [n for n in items if n.get("id") != nid]
             if len(keep) == len(items):

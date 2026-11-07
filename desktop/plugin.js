@@ -735,11 +735,14 @@ function buildDoc(widget, accent) {
 }
 
 function WidgetFrame({ widget, accent }) {
+  const frameRef = useRef(null)
   const [height, setHeight] = useState(widget.height || 120)
   const doc = useMemo(() => buildDoc(widget, accent), [widget.html, widget.id, accent])
   useEffect(() => {
     if (widget.height) return undefined
     const onMsg = e => {
+      // Only trust our own frame: a widget must not resize its neighbours.
+      if (!frameRef.current || e.source !== frameRef.current.contentWindow) return
       if (e.data && e.data.bdWidget === widget.id && typeof e.data.height === 'number') {
         setHeight(Math.max(40, Math.min(e.data.height, 2400)))
       }
@@ -748,6 +751,7 @@ function WidgetFrame({ widget, accent }) {
     return () => window.removeEventListener('message', onMsg)
   }, [widget.id, widget.height])
   return h('iframe', {
+    ref: frameRef,
     className: 'bd-frame',
     title: widget.title,
     sandbox: 'allow-scripts',

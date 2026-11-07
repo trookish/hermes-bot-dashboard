@@ -28,14 +28,14 @@ HERMES_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "hermes"
 BRAIN = Path(os.environ.get("HERMES_BRAIN", str(Path.home() / "Desktop" / "HermesBrain")))
 TASKS_DIR = BRAIN / "TaskNotes" / "Tasks"
 PROJECTS_DIR = BRAIN / "02 Projects"
-BOT_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+BOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 STALE_DAYS = 14
 
 
 def _bot_home(bot: str) -> Path:
     if bot in ("", "default", "hermes"):
         return HERMES_ROOT
-    if not BOT_ID.match(bot):
+    if not BOT_ID.fullmatch(bot or ""):
         raise HTTPException(400, "Invalid bot id.")
     home = HERMES_ROOT / "profiles" / bot
     if not home.is_dir():
@@ -183,6 +183,8 @@ def _guard(fn):
         return fn()
     except PanelError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:  # PanelBusy or a file held open by another program
+        raise HTTPException(503, f"The panel files are busy. Try again. ({exc})") from exc
 
 
 class LayoutBody(BaseModel):
@@ -216,7 +218,7 @@ def panel_note_update(body: NoteBody) -> dict:
 
 @router.post("/panel/note/delete")
 def panel_note_delete(body: NoteBody) -> dict:
-    if not _panel(body.bot).delete_note(body.id or ""):
+    if not _guard(lambda: _panel(body.bot).delete_note(body.id or "")):
         raise HTTPException(404, "Note not found.")
     return {"ok": True}
 
@@ -244,7 +246,7 @@ def panel_widget_save(body: WidgetBody) -> dict:
 
 @router.post("/panel/widget/remove")
 def panel_widget_remove(body: WidgetBody) -> dict:
-    if not _panel(body.bot).remove_widget(body.id or ""):
+    if not _guard(lambda: _panel(body.bot).remove_widget(body.id or "")):
         raise HTTPException(404, "Widget not found.")
     return {"ok": True}
 

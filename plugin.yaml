@@ -1,5 +1,5 @@
 name: bot-dashboard
-version: 0.2.0
+version: 0.2.1
 description: Side panel that shows the selected bot's dashboard - profile, scheduled jobs, tasks and projects.
 manifest_version: 1
 requires_hermes: ">=0.20.0"

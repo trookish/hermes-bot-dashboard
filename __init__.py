@@ -59,7 +59,7 @@ SCHEMA = {
             "html_file": {"type": "string", "description": "Path to an existing .html file to use instead of html."},
             "height": {"type": "integer", "description": "Optional fixed height in px; omit to auto-size."},
             "note_id": {"type": "string", "description": "Note id (update_note, delete_note)."},
-            "text": {"type": "string", "description": "Note text, Markdown allowed (add_note, update_note)."},
+            "text": {"type": "string", "description": "Note text, plain text; line breaks are kept (add_note, update_note)."},
             "pinned": {"type": "boolean", "description": "Pin or unpin a note (update_note)."},
             "order": {"type": "array", "items": {"type": "string"},
                       "description": "Card order (set_layout). Ids: profile, jobs, tasks, notes, projects, w:<widget_id>."},
@@ -129,12 +129,16 @@ def handle(args: dict, **_kw) -> str:
         return _err(f"Unknown action {action!r}.")
     except PanelError as exc:
         return _err(str(exc))
+    except OSError as exc:
+        return _err(f"The panel files are busy; try again. ({exc})")
     except Exception as exc:  # noqa: BLE001 — a tool must answer, never raise
         logger.warning("bot_panel failed: %s", exc)
         return _err(f"Panel operation failed: {exc}")
 
 
-_PANEL_WORDS = ("panel", "dashboard", "widget", "sidebar", "side panel", "my notes", "بانل", "اللوحة", "لوحة")
+# Narrow phrases only: bare "لوحة" also means licence plate (Plate Lab).
+_PANEL_WORDS = ("panel", "dashboard", "widget", "sidebar", "my notes", "بانل", "البانل",
+                "لوحتك", "لوحة البوت", "اللوحة الجانبية", "ويدجت")
 
 
 def _first_turn_context(is_first_turn: bool = False, user_message: str = "", **_kw):

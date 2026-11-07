@@ -4,8 +4,10 @@
 #        ./deploy.sh health     (one profile)
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$LOCALAPPDATA/hermes"
-PY="$ROOT/hermes-agent/venv/Scripts/python.exe"
+ROOT="$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || echo "$LOCALAPPDATA")/hermes"
+# Live runtime: the newest install environment (hermes-agent/venv goes stale after updates).
+PY="$(ls -td "$ROOT"/installs/*/environments/*/venv/Scripts/python.exe 2>/dev/null | head -1)"
+[ -x "$PY" ] || { echo "Hermes runtime python not found" >&2; exit 1; }
 
 copy_to() {
   local dest="$1/plugins/bot-dashboard"
