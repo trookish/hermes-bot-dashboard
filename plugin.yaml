@@ -1,5 +1,5 @@
 name: bot-dashboard
-version: 0.4.0
+version: 0.4.1
 description: Side panel that shows the dashboard of the bot or group chat in focus - profile, members, activity, scheduled jobs, tasks and projects.
 manifest_version: 1
 requires_hermes: ">=0.20.0"

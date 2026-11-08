@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import base64
 import json
+import hashlib
 import os
 import re
 import sqlite3
 import sys
 import time
+import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -307,7 +309,7 @@ def _rooms_query(sql: str, args: tuple = ()) -> list[tuple[Path, list[sqlite3.Ro
         if not db.is_file():
             continue
         try:
-            con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=1.5)
+            con = sqlite3.connect(f"file:{urllib.request.pathname2url(str(db))}?mode=ro", uri=True, timeout=1.5)
         except sqlite3.Error:
             continue
         try:
@@ -355,12 +357,20 @@ def _rooms() -> dict[str, dict]:
 
 
 def _group_home(rid: str) -> Path:
-    return HERMES_ROOT / "plugin-data" / "bot-dashboard" / "groups" / re.sub(r"[^A-Za-z0-9_-]", "_", rid)
+    # The slug keeps folders readable; the hash keeps ids that differ only in
+    # punctuation or letter case (room.1, room_1, Room:1) in separate folders.
+    slug = re.sub(r"[^a-z0-9_-]", "_", rid.lower())[:60]
+    digest = hashlib.sha1(rid.encode("utf-8")).hexdigest()[:10]
+    return HERMES_ROOT / "plugin-data" / "bot-dashboard" / "groups" / f"{slug}-{digest}"
+
+
+def _member_profile(m: dict) -> str:
+    return str(m.get("profile") or _dict(m.get("target")).get("profile") or "").strip()
 
 
 def _member(m: dict) -> dict:
     target = _dict(m.get("target"))
-    profile = str(m.get("profile") or target.get("profile") or "").strip()
+    profile = _member_profile(m)
     pid = "hermes" if profile in ("", "default") else profile
     remote = str(target.get("kind") or "local") != "local"
     out = {
@@ -517,7 +527,7 @@ def group_stamp(id: str = Query("", max_length=200)) -> dict:
     homes = []
     for m in room["members"]:
         try:
-            homes.append(_bot_home(str(_dict(m).get("profile") or "")))
+            homes.append(_bot_home(_member_profile(_dict(m))))
         except HTTPException:
             homes.append(None)
     parts = [room["updatedAt"], room["revision"], room["disbandedAt"], count,
@@ -529,8 +539,8 @@ def group_stamp(id: str = Query("", max_length=200)) -> dict:
 
 def _panel(bot: str) -> Panel:
     if bot.startswith(GROUP_PREFIX):
-        rid = bot[len(GROUP_PREFIX):]
-        if not ROOM_ID.fullmatch(rid or "") or rid not in _rooms():
+        rid, room = _resolve_room(bot)  # same key forms as GET /group
+        if room is None:
             raise HTTPException(404, "This group no longer exists. It was deleted or disbanded.")
         return Panel(_group_home(rid), create_home=True, builtin=GROUP_BUILTIN)
     return Panel(_bot_home(bot))

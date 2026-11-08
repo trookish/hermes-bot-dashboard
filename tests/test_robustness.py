@@ -100,6 +100,67 @@ check("note on unknown group -> 404", r.status_code == 404, r.text[:160])
 check("unknown group folder not created", not (root / "plugin-data" / "bot-dashboard" / "groups" / "nope").exists())
 check("/groups lists nothing on empty install", c.get("/groups").json() == {"groups": []})
 
+# 7. a real room database (path with % and # to test URI escaping)
+import sqlite3 as _sq
+odd = tmp / "odd%41#dir" / "hermes"
+(odd / "profiles" / "alpha").mkdir(parents=True)
+(odd / "profiles" / "alpha" / "profile.yaml").write_text("ui_meta:\n  hermes-bots:\n    title: Alpha\n    color: '#22c55e'\n", encoding="utf-8")
+db = _sq.connect(odd / "state.db")
+db.executescript("""
+CREATE TABLE hosted_rooms(room_id TEXT PRIMARY KEY, name TEXT, members_json TEXT, revision INT, created_at REAL, updated_at REAL, disbanded_at REAL);
+CREATE TABLE hosted_room_events(room_id TEXT, seq INT, kind TEXT, actor_json TEXT, created_at REAL);
+CREATE TABLE hosted_room_driver_leases(room_id TEXT, expires_at REAL, released_at REAL);
+CREATE TABLE hosted_room_driver_tasks(room_id TEXT, terminal_at REAL);
+""")
+now = time.time()
+members = json.dumps([{"profile": "alpha", "handle": "alpha", "display_name": "A"},
+                      {"target": {"kind": "local", "profile": "deadbot"}, "handle": "deadbot"}])
+for rid in ("room.1", "room_1", "room:1"):
+    db.execute("INSERT INTO hosted_rooms VALUES(?,?,?,?,?,?,NULL)", (rid, "Team " + rid, members, 1, now - 100, now))
+db.execute("INSERT INTO hosted_room_events VALUES('room.1',1,'message.posted','{\"display_name\":\"Turki\"}',?)", (now,))
+db.execute("INSERT INTO hosted_room_driver_leases VALUES('room.1',?,NULL)", (now + 60,))
+db.execute("INSERT INTO hosted_room_driver_tasks VALUES('room.1',NULL)")
+db.commit(); db.close()
+plugin_api.HERMES_ROOT = odd
+plugin_api.ROOM_DBS = (odd / "shared-state.db", odd / "state.db")
+plugin_api.PROFILES = odd / "profiles" if hasattr(plugin_api, "PROFILES") else None
+g = c.get("/groups").json()["groups"]
+check("rooms read through an escaped URI", len(g) == 3, g)
+s = c.get("/group", params={"id": "group:id:room.1"}).json()
+check("group: members resolved", [m["missing"] for m in s.get("members", [])] == [False, True], s.get("members"))
+check("group: target.profile member is the deleted bot", s["members"][1]["id"] == "deadbot")
+check("group: live lease and running task", s.get("live") is True and s.get("running") == 1, s)
+check("group: event listed", s.get("eventCount") == 1 and s["events"][0]["actor"] == "Turki", s.get("events"))
+r = c.post("/panel/note", json={"bot": "group:id:room.1", "text": "only room.1"})
+check("note on a real group -> 200", r.status_code == 200, r.text[:160])
+others = [c.get("/group", params={"id": f"group:id:{x}"}).json()["panel"]["notes"] for x in ("room_1", "room:1")]
+check("similar room ids keep separate panels", others == [[], []], others)
+s1 = c.get("/group/stamp", params={"id": "group:id:room.1"}).json()["stamp"]
+time.sleep(0.05)
+(odd / "profiles" / "alpha" / "profile.yaml").write_text("ui_meta:\n  hermes-bots:\n    title: Alpha 2\n", encoding="utf-8")
+check("group stamp changes when a member is edited", c.get("/group/stamp", params={"id": "group:id:room.1"}).json()["stamp"] != s1)
+
+# 8. a profile deleted between the existence check and the write is not recreated
+import panel_store as _ps
+home = odd / "profiles" / "racer"
+home.mkdir()
+pn = Panel(home)
+real = Path.is_dir
+def flaky(self):
+    ok = real(self)
+    if self == home and ok:
+        shutil.rmtree(home)
+    return ok
+Path.is_dir = flaky
+try:
+    pn.add_note("x", author="t")
+    raced = "no error"
+except PanelError:
+    raced = "PanelError"
+finally:
+    Path.is_dir = real
+check("delete mid-write -> PanelError, no folder", raced == "PanelError" and not home.exists(), raced)
+
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")
 shutil.rmtree(tmp, ignore_errors=True)
 sys.exit(0 if all(ok for _, ok in results) else 1)

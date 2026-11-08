@@ -91,11 +91,20 @@ class Panel:
     @contextlib.contextmanager
     def _locked(self):
         """Serialize writers across threads AND processes (agent + dashboard)."""
+        gone = PanelError("This bot no longer exists. It was deleted or renamed.")
         if not self.create_home and not self.home.is_dir():
-            raise PanelError("This bot no longer exists. It was deleted or renamed.")
-        self.dir.mkdir(parents=True, exist_ok=True)
+            raise gone
+        try:
+            # Without parents=True a profile deleted after the check above is
+            # not recreated: mkdir fails instead of rebuilding the whole path.
+            self.dir.mkdir(parents=self.create_home, exist_ok=True)
+        except FileNotFoundError:
+            raise gone from None
         with _LOCK:
-            fh = open(self.dir / ".lock", "a+b")
+            try:
+                fh = open(self.dir / ".lock", "a+b")
+            except FileNotFoundError:
+                raise gone from None
             try:
                 deadline = time.monotonic() + 10
                 while True:
