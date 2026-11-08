@@ -1297,67 +1297,59 @@ function ActivityWidget({ bot }) {
 
 // ---------------------------------------------------------------- focus
 
-// The group chat view marks its container with the room's owner key
-// ("group:id:<roomId>" or, for older rooms, "group:name:<name>").
+// The app's group chat view marks its root with the room's owner key:
+// "group:id:<roomId>", or "group:name:<name>" for a room made before room ids.
 const GROUP_SEL = '[data-preview-annotate-destination="group"][data-preview-annotate-owner-key]'
 
+/** Group chats rendered on screen right now. A room parked in an inactive tab
+ *  is `invisible`, `inert` and zero-sized, so it drops out of this list. */
 function shownGroups() {
-  const mine = document.querySelector('.bd')?.closest('[data-pane-host]')
-  const myZone = mine?.getAttribute('data-tree-group')
   const out = []
   for (const el of document.querySelectorAll(GROUP_SEL)) {
     const key = el.getAttribute('data-preview-annotate-owner-key')
-    const pane = el.closest('[data-pane-host]')
-    const hidden = pane?.classList.contains('invisible')
-    // A group docked as a tab beside this pane is hidden while the dashboard
-    // tab is active; it still counts as the chat being followed.
-    const sameZone = hidden && myZone && pane?.getAttribute('data-tree-group') === myZone
-    if (!key || (hidden && !sameZone)) continue
-    if (!hidden) {
-      const r = el.getBoundingClientRect()
-      if (r.width < 2 || r.height < 2) continue
-    }
+    if (!key || el.closest('[inert]') || el.closest('.invisible')) continue
+    if (getComputedStyle(el).visibility === 'hidden') continue
+    const r = el.getBoundingClientRect()
+    if (r.width < 4 || r.height < 4) continue
     out.push(key)
   }
   return out
 }
 
-/** What the pane follows: the focused bot, or a group chat when one is in front.
- *  A group wins when it opens or is clicked; a bot wins when its chat is
- *  clicked or the focused bot changes with no group opening at the same time. */
+/** What the pane follows. A group chat that appears on screen wins; clicking a
+ *  bot's chat (or picking a bot in the roster) hands it back to that bot. A
+ *  group stays pinned while it is on screen, even as the focused bot changes. */
 function useFocusTarget() {
   const botId = useBotId()
   const [group, setGroup] = useState(null)
-  const cur = useRef(null)
+  const pin = useRef(null) // the group key in front, or null for the bot
   const seen = useRef([])
-  const lastGroupShown = useRef(0)
 
   useEffect(() => {
-    const set = k => {
-      if (k !== cur.current) {
-        cur.current = k
-        setGroup(k)
-      }
+    const follow = key => {
+      if (key === pin.current) return
+      pin.current = key
+      setGroup(key)
     }
     const sync = () => {
-      const keys = shownGroups()
-      const fresh = keys.filter(k => !seen.current.includes(k))
-      seen.current = keys
-      if (fresh.length) {
-        lastGroupShown.current = Date.now()
-        set(fresh[fresh.length - 1])
-      } else if (cur.current && !keys.includes(cur.current)) {
-        set(null)
+      const views = shownGroups()
+      const fresh = views.filter(k => !seen.current.includes(k))
+      seen.current = views
+      // A room that just appeared on screen is a deliberate move: follow it,
+      // even when another room is still open beside it. Only then fall back.
+      if (fresh.length) return follow(fresh[fresh.length - 1])
+      if (pin.current && !views.includes(pin.current)) {
+        pin.current = null
+        setGroup(null)
       }
     }
     const onPointer = e => {
       const t = e.target instanceof Element ? e.target : null
-      if (!t) return
-      const g = t.closest(GROUP_SEL)
-      if (g) return set(g.getAttribute('data-preview-annotate-owner-key'))
-      const pane = t.closest('[data-pane-host]')
-      const id = pane?.getAttribute('data-pane-host') || ''
-      if (id === 'workspace' || (id.startsWith('plugin-workspace:') && !id.includes(':group:'))) set(null)
+      if (!t || t.closest('.bd')) return // inside this pane: leave focus alone
+      const view = t.closest(GROUP_SEL)
+      if (view) return follow(view.getAttribute('data-preview-annotate-owner-key'))
+      // A click anywhere in another pane is a move away from the group.
+      if (t.closest('[data-pane-host]')) pin.current = null, setGroup(null)
     }
     sync()
     const timer = setInterval(sync, 700)
@@ -1369,23 +1361,6 @@ function useFocusTarget() {
       document.removeEventListener('focusin', onPointer, true)
     }
   }, [])
-
-  // Picking a bot in the roster changes the focused profile; unless a group
-  // opened in the same moment, follow the bot.
-  const first = useRef(true)
-  useEffect(() => {
-    if (first.current) {
-      first.current = false
-      return
-    }
-    const t = setTimeout(() => {
-      if (Date.now() - lastGroupShown.current > 900) {
-        cur.current = null
-        setGroup(null)
-      }
-    }, 300)
-    return () => clearTimeout(t)
-  }, [botId])
 
   return group ? { kind: 'group', key: group } : { kind: 'bot', key: botId }
 }
@@ -1516,7 +1491,7 @@ function Dashboard({ target }) {
     error ? h('div', { className: 'bd-error', key: 'err' }, `Showing the last loaded data. ${error}`) : null,
     ...visible.slice(heroAt + 1).map(cardFor),
     bot.brain ? null : h('div', { className: 'bd-error', key: 'brain' }, 'HermesBrain was not found, so tasks and projects are empty.'),
-    h('div', { className: 'bd-foot', key: 'foot' }, group ? `Follows the chat in focus · Group: ${bot.name}` : `Follows the chat in focus · @${bot.id}`)
+    h('div', { className: 'bd-foot', key: 'foot' }, group ? `Following this group chat · ${bot.name}` : `Following @${bot.id}`)
   )
 }
 
