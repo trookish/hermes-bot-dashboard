@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.2
+
+- **The panel rule is standing.** The `pre_llm_call` hook now injects a short
+  instruction on every turn — open a `todo_list` task per unit of work and record
+  each decision or finding as a panel note, without being asked. The live
+  snapshot (widgets, note count, latest note) still rides only the first turn, so
+  the cached system prompt is untouched.
+- **Both panes come back after a Close.** The palette carries "Bot dashboard:
+  show the Bot pane" and "Bot dashboard: show the Group pane", each un-dismissing
+  and revealing its pane, and the plugin un-dismisses both panes once per upgrade.
+- The Group pane's auto-reveal now targets the registered contribution id
+  `bot-dashboard:groups`; the previous `bot-dashboard:group` no-opped silently.
+
 ## 1.1.1
 
 - The Group pane now follows a group chat by its room id — Hermes titles those

@@ -123,6 +123,16 @@ def test_widget_roundtrip():
     assert wid not in left, left
 
 
+def test_hook_rule_rides_every_turn():
+    first = MOD._first_turn_context(is_first_turn=True, user_message="hi")
+    later = MOD._first_turn_context(is_first_turn=False, user_message="keep going")
+    for out in (first, later):
+        assert MOD._PANEL_RULE in out["context"], out
+        assert "todo_list" in out["context"] and "bot_panel" in out["context"], out
+    assert "desktop tab 'Bot'" in first["context"], first
+    assert "desktop tab 'Bot'" not in later["context"], "the snapshot repeated on a plain turn"
+
+
 check("both tools and the hook register", test_register)
 check("schemas describe themselves", test_schemas_match_runners)
 check("unknown action answers instead of raising", test_unknown_action_answers)
@@ -130,6 +140,7 @@ check("list_groups answers", test_list_groups)
 check("view returns the whole group picture", test_view_and_write_path)
 check("missing group is a plain message", test_missing_group_is_a_message)
 check("widget add/remove roundtrip", test_widget_roundtrip)
+check("panel rule rides every turn", test_hook_rule_rides_every_turn)
 
 print(f"\n{len(PASS)}/{len(PASS) + len(FAIL)} passed")
 sys.exit(1 if FAIL else 0)

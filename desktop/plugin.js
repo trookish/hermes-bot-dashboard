@@ -10,6 +10,8 @@ const { useCallback, useEffect, useMemo, useRef, useState } = React
 
 const PLUGIN_ID = 'bot-dashboard'
 const STYLE_ID = 'bot-dashboard-style'
+// Bump to have the two panes un-dismissed once after an upgrade.
+const PANE_RESTORE_KEY = 'panes-restored-v2'
 const REFRESH_MS = 60_000
 const STAMP_MS = 4_000
 
@@ -1285,7 +1287,7 @@ function ActivityWidget({ bot }) {
 // the app's own markup is never read or clicked (catalog rule 8).
 
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase()
-const GROUP_PANE = `${PLUGIN_ID}:group`
+const GROUP_PANE = `${PLUGIN_ID}:groups`
 
 const groupStore = (() => {
   let value = null
@@ -1686,6 +1688,47 @@ export default {
       },
       render: () => h(GroupTab)
     })
+    ctx.register({
+      id: 'show-bot',
+      area: 'palette',
+      data: {
+        id: 'bot-dashboard.showBot',
+        label: 'Bot dashboard: show the Bot pane',
+        keywords: ['bot', 'dashboard', 'pane', 'panel', 'restore', 'closed'],
+        run: () => {
+          host.undismissPane?.(`${PLUGIN_ID}:pane`)
+          host.revealPane?.(`${PLUGIN_ID}:pane`)
+        }
+      }
+    })
+    ctx.register({
+      id: 'show-group',
+      area: 'palette',
+      data: {
+        id: 'bot-dashboard.showGroup',
+        label: 'Bot dashboard: show the Group pane',
+        keywords: ['group', 'dashboard', 'pane', 'panel', 'restore', 'closed'],
+        run: () => {
+          host.undismissPane?.(`${PLUGIN_ID}:groups`)
+          host.revealPane?.(`${PLUGIN_ID}:groups`)
+        }
+      }
+    })
+    // A persisted Close outlives the layout that caused it, so a dismissed pane
+    // never adopts again and there is no UI to bring it back. Undismiss once
+    // per restore key; a Close the user makes after that still sticks.
+    try {
+      if (
+        ctx.storage?.get('panesRestored', null) !== PANE_RESTORE_KEY &&
+        typeof host.undismissPane === 'function'
+      ) {
+        host.undismissPane(`${PLUGIN_ID}:pane`)
+        host.undismissPane(`${PLUGIN_ID}:groups`)
+        ctx.storage?.set('panesRestored', PANE_RESTORE_KEY)
+      }
+    } catch {
+      /* older desktops without undismissPane */
+    }
     ctx.onDispose?.(() => document.getElementById(STYLE_ID)?.remove())
   }
 }

@@ -279,27 +279,39 @@ def handle_group(args: dict, **_kw) -> str:
 _PANEL_WORDS = ("panel", "dashboard", "widget", "sidebar", "my notes", "بانل", "البانل",
                 "لوحتك", "لوحة البوت", "اللوحة الجانبية", "ويدجت")
 
+# Rides every turn: short, constant, and never restated by the user.
+_PANEL_RULE = (
+    "[Bot Panel] Standing rule: record the work in the panel unprompted — open a todo_list task per "
+    "unit of work (it shows in the panel's Tasks card) and add a bot_panel note for each decision, "
+    "constraint or finding. Keep both current as the work moves."
+)
+
 
 def _first_turn_context(is_first_turn: bool = False, user_message: str = "", **_kw):
+    """Inject the panel rule on every turn, plus a live snapshot on the first.
+
+    The rule is short and constant, so it rides in the turn's user message and
+    never disturbs the cached system prompt. Only the first turn (or a mention
+    of the panel) pays for the snapshot.
+    """
+    parts = [_PANEL_RULE]
     msg = str(user_message or "").lower()
-    if not is_first_turn and not any(w in msg for w in _PANEL_WORDS):
-        return None
-    try:
-        panel = Panel(_home())
-        widgets = ", ".join(w["title"] for w in panel.widgets()) or "none yet"
-        notes = panel.notes()
-        recent = "; ".join(n["text"].splitlines()[0][:80] for n in notes[:3]) or "none"
-        return {"context": (
-            f"[Bot Panel] Turki sees your own panel beside this chat (desktop tab 'Bot'): profile, "
-            f"scheduled jobs, tasks, notes, projects, plus custom widgets ({widgets}). "
-            f"Notes ({len(notes)}; latest: {recent}). The tab beside it, 'Group', shows a group chat's "
-            f"dashboard: members, activity, shared tasks, projects, notes and widgets. Read or edit "
-            f"either with the bot_panel (your own) and group_dashboard (a group) tools when he asks "
-            f"for something in the panel, to pin a view you built, or to leave a note."
-        )}
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("bot panel context skipped: %s", exc)
-        return None
+    if is_first_turn or any(w in msg for w in _PANEL_WORDS):
+        try:
+            panel = Panel(_home())
+            widgets = ", ".join(w["title"] for w in panel.widgets()) or "none yet"
+            notes = panel.notes()
+            recent = "; ".join(n["text"].splitlines()[0][:80] for n in notes[:3]) or "none"
+            parts.append(
+                f"Turki sees this panel beside the chat (desktop tab 'Bot'): profile, scheduled jobs, "
+                f"tasks, notes, projects, and custom widgets ({widgets}). Notes: {len(notes)}; latest: "
+                f"{recent}. The 'Group' tab shows a group chat's dashboard: members, activity, shared "
+                f"tasks and projects. Read or edit either with the bot_panel (your own) and "
+                f"group_dashboard (a group) tools."
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("bot panel context skipped: %s", exc)
+    return {"context": "\n".join(parts)}
 
 
 def register(ctx):
