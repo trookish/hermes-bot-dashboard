@@ -6,7 +6,7 @@ Hermes user.
 ## 1. Entry file
 
 `publish/bot-dashboard.yaml` is the ready entry. Its `sha` is the 40-character
-pin for the 1.0.0 commit (`cf9c1c195c3ef2f2a8304580712098ccadb14d46`); bump it in its own PR for every later release.
+pin for the 1.1.0 commit (`6d2d53911a67956496ab7d5bb39972a94035601b`); bump it in its own PR for every later release.
 
 ## 2. Pull request to hermes-agent
 
@@ -19,7 +19,7 @@ git checkout -b add-bot-dashboard
 git add plugin-catalog/bot-dashboard.yaml
 git commit -m "catalog: add bot-dashboard (bot and group desktop panes)"
 gh pr create --title "catalog: add bot-dashboard" \
-  --body "Owner submission. Desktop panes for a bot's dashboard and a group chat's dashboard. Pin cf9c1c195c3e; validation passes."
+  --body "Owner submission. Desktop panes for a bot's dashboard and a group chat's dashboard. Pin 6d2d53995c3e; validation passes."
 ```
 
 Admission rules that shaped this build (see `plugin-catalog/README.md`):
@@ -36,6 +36,6 @@ Admission rules that shaped this build (see `plugin-catalog/README.md`):
 
 - [ ] `hermes plugins validate .` → Validation passed
 - [ ] `python tests/test_robustness.py` → 39/39
-- [ ] `git status` clean, tag the release: `git tag v1.0.0 && git push --tags`
+- [ ] `git status` clean, tag the release: `git tag v1.1.0 && git push --tags`
 - [ ] Screenshot of both panes added to the README (the entry's `image:` field is
       optional, but reviewers and users read the README first)

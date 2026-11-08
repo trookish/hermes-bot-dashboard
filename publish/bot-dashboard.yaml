@@ -1,23 +1,24 @@
 name: bot-dashboard
 repo: https://github.com/trookish/hermes-bot-dashboard
-sha: cf9c1c195c3ef2f2a8304580712098ccadb14d46
+sha: 6d2d53911a67956496ab7d5bb39972a94035601b
 title: Bot Dashboard
 description: >-
   Two desktop panes in one plugin. Bot shows the focused bot's dashboard - profile and
   model, scheduled jobs, TaskNotes tasks, notes, projects and the custom widgets that bot
   pinned for you; Group shows a group chat's members, activity, shared tasks and projects,
   and follows a group chat you open. Ships one agent tool (bot_panel) so a bot can edit its
-  own panel, and a pre_llm_call hook that mentions the panel only on the first turn or when
-  the message asks about it.
+  own panel and a group_dashboard tool so any member bot can read or shape a group's dashboard,
+  plus a pre_llm_call hook that mentions the panes only on the first turn or when asked.
 maintainer: trookish
 tier: community
 category: desktop
-version: "1.0.0"
+version: "1.1.0"
 docs_url: https://github.com/trookish/hermes-bot-dashboard#readme
 platforms: []
 capabilities:
   provides_tools:
     - bot_panel
+    - group_dashboard
   provides_hooks:
     - pre_llm_call
   provides_middleware: []
