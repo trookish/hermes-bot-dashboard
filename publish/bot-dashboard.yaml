@@ -9,10 +9,15 @@ description: >-
   and follows a group chat you open. Ships one agent tool (bot_panel) so a bot can edit its
   own panel and a group_dashboard tool so any member bot can read or shape a group's dashboard,
   plus a pre_llm_call hook that mentions the panes only on the first turn or when asked.
+  Disclosure - reads the local Hermes home (bot profiles, group room records, TaskNotes
+  tasks and HermesBrain projects) and writes only the plugin's own widget, note and layout
+  files under the profile's plugin data; the panes talk to the Hermes API on 127.0.0.1,
+  with no third-party network calls, no shell commands and no stored credentials.
 maintainer: trookish
 tier: community
 category: desktop
 version: "1.1.1"
+requires_hermes: ">=0.20.0"
 docs_url: https://github.com/trookish/hermes-bot-dashboard#readme
 platforms: []
 capabilities:
