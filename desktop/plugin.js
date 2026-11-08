@@ -69,6 +69,12 @@ const CSS = `
 .bd-card-title{font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--ui-text-secondary)}
 .bd-count{font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:color-mix(in srgb,var(--bd-accent) 18%,transparent);color:var(--ui-text-primary)}
 .bd-chev{margin-left:auto;color:var(--ui-text-tertiary);transition:transform .15s}
+.bd-head-tools{margin-left:auto;display:flex;align-items:center;gap:2px}
+.bd-head-tools+.bd-chev{margin-left:4px}
+.bd-tool{display:inline-grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid transparent;border-radius:6px;background:transparent;
+  color:var(--ui-text-tertiary);cursor:pointer;transition:color .15s,border-color .15s,background .15s}
+.bd-tool:hover{color:var(--ui-text-primary);border-color:var(--ui-stroke-secondary);background:var(--ui-row-hover-background)}
+.bd-tool svg{width:14px;height:14px;display:block}
 .bd-chev.open{transform:rotate(90deg)}
 .bd-info{position:relative;display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;font-size:10px;font-weight:700;
   color:var(--ui-text-tertiary);border:1px solid var(--ui-stroke-secondary);cursor:help;text-transform:none;letter-spacing:0}
@@ -255,7 +261,7 @@ function Info({ text }) {
   )
 }
 
-function Card({ id, botId, title, count, info, actions, children }) {
+function Card({ id, botId, title, count, info, actions, tools, children }) {
   const key = `collapsed.${botId}.${id}`
   const [collapsed, setCollapsed] = useState(() => storageGet(key, false))
   useEffect(() => setCollapsed(storageGet(key, false)), [key])
@@ -286,6 +292,7 @@ function Card({ id, botId, title, count, info, actions, children }) {
       h('span', { className: 'bd-card-title' }, title),
       count != null ? h('span', { className: 'bd-count' }, count) : null,
       info ? h(Info, { text: info }) : null,
+      tools ? h('span', { className: 'bd-head-tools', onClick: e => e.stopPropagation(), onKeyDown: e => e.stopPropagation() }, tools) : null,
       h('span', { className: `bd-chev${collapsed ? '' : ' open'}`, 'aria-hidden': true }, '›')
     ),
     collapsed ? null : h('div', { className: 'bd-body' }, actions || null, children)
@@ -852,7 +859,7 @@ const FIT_SCRIPT = `<script>(function(){var id=%ID%,last=-1;function fit(){var b
 function buildDoc(widget, accent, large = false) {
   const html = widget.html || ''
   const head = `<meta charset="utf-8"><style>${themeCss(accent)}</style><script>document.documentElement.classList.add('bd-fit')<\/script>`
-  const script = FIT_SCRIPT.replace('%ID%', JSON.stringify(widget.id)) + (large ? '<style>body{padding:4px}</style>' : '')
+  const script = FIT_SCRIPT.replace('%ID%', JSON.stringify(widget.id)) + (large ? '<style>body{padding:4px}html.bd-fit{overflow:auto}</style>' : '')
   if (/<html[\s>]/i.test(html)) {
     let doc = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + head) : html.replace(/<html[^>]*>/i, m => m + '<head>' + head + '</head>')
     doc = /<\/body>/i.test(doc) ? doc.replace(/<\/body>/i, script + '</body>') : doc + script
@@ -863,7 +870,7 @@ function buildDoc(widget, accent, large = false) {
 
 function WidgetFrame({ widget, accent, large = false }) {
   const frameRef = useRef(null)
-  const [height, setHeight] = useState(widget.height || 120)
+  const [height, setHeight] = useState(large ? null : widget.height || 120)
   const doc = useMemo(() => buildDoc(widget, accent, large), [widget.html, widget.id, accent, large])
   useEffect(() => {
     if (widget.height && !large) return undefined
@@ -882,9 +889,10 @@ function WidgetFrame({ widget, accent, large = false }) {
     className: 'bd-frame',
     title: widget.title,
     sandbox: 'allow-scripts',
-    scrolling: 'no',
+    scrolling: large ? 'auto' : 'no',
     srcDoc: doc,
-    style: { height: large ? height : widget.height || height }
+    // Large view: fill the dialog until the widget reports its height, then shrink to fit.
+    style: { height: large ? height || 'min(70vh, 640px)' : widget.height || height }
   })
 }
 
@@ -920,14 +928,18 @@ function CustomWidget({ bot, widget }) {
       id: `w:${widget.id}`,
       botId: bot.id,
       title: widget.title,
-      info: `A custom widget ${widget.author === 'bot' ? `built by @${bot.id}` : 'you added'}. Ask the bot in chat to change it, or use Customize to edit its HTML. Last updated ${widget.updated || 'unknown'}.`
+      info: `A custom widget ${widget.author === 'bot' ? `built by @${bot.id}` : 'you added'}. Ask the bot in chat to change it, or use Customize to edit its HTML. Last updated ${widget.updated || 'unknown'}.`,
+      tools: h(
+        'button',
+        { type: 'button', className: 'bd-tool', onClick: () => setOpen(true), title: 'Expand to full size', 'aria-label': `Expand ${widget.title}` },
+        h(
+          'svg',
+          { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+          h('path', { d: 'M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7' })
+        )
+      )
     },
     h(WidgetFrame, { widget, accent: bot.color }),
-    h(
-      'div',
-      { style: { display: 'flex', justifyContent: 'flex-end', marginTop: 6 } },
-      h('button', { type: 'button', className: 'bd-mini', onClick: () => setOpen(true), title: 'Open this widget at full size' }, 'Open large')
-    ),
     open ? h(WidgetOverlay, { widget, accent: bot.color, onClose: () => setOpen(false) }) : null
   )
 }
