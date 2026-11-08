@@ -153,6 +153,7 @@ const CSS = `
 .bd-next{margin-top:5px;font-size:12px;color:var(--ui-text-secondary)}
 .bd-next b{color:var(--ui-text-tertiary);font-weight:600}
 .bd-foot{font-size:11px;color:var(--ui-text-quaternary,var(--ui-text-tertiary));text-align:center}
+.bd-diag{opacity:.75}
 .bd-skeleton{height:64px;border-radius:12px;background:linear-gradient(90deg,var(--ui-bg-secondary),var(--ui-bg-tertiary),var(--ui-bg-secondary));
   background-size:200% 100%;animation:bd-sh 1.2s infinite}
 @keyframes bd-sh{to{background-position:-200% 0}}
@@ -1431,6 +1432,17 @@ function Dashboard({ target }) {
   const [customizing, setCustomizing] = useState(false)
   useEffect(() => setCustomizing(false), [botId, kind])
 
+  // Build stamp: proves which copy of the plugin the app actually loaded, and
+  // whether the host serves the group routes and the DOM exposes group chats.
+  const [rooms, setRooms] = useState(null)
+  useEffect(() => {
+    let off = false
+    rest('/groups')
+      .then(d => { if (!off) setRooms(Array.isArray(d) ? d.length : (d && Array.isArray(d.groups) ? d.groups.length : -1)) })
+      .catch(e => { if (!off) setRooms('err ' + ((e && e.message) || e)) })
+    return () => { off = true }
+  }, [])
+
   const accent = group ? bot?.members?.find(m => m.color)?.color : bot?.color
   const style = useMemo(() => (accent ? { '--bd-accent': accent } : undefined), [accent])
 
@@ -1443,7 +1455,7 @@ function Dashboard({ target }) {
       : bot.reason === 'invalid'
         ? 'Open a bot from the Bots list to see its dashboard.'
         : 'The bot was deleted or renamed. Open a bot from the Bots list to see its dashboard.'
-    return h('div', { className: `bd${group ? ' bd-group' : ''}`, 'data-bot': botId },
+    return h('div', { className: `bd${group ? ' bd-group' : ''}`, 'data-bot': botId, 'data-version': '0.4.3' },
       h('div', { className: 'bd-card bd-missing' },
         h('div', { className: 'bd-missing-title' }, title),
         h('p', null, body),
@@ -1485,13 +1497,16 @@ function Dashboard({ target }) {
 
   return h(
     'div',
-    { className: `bd${group ? ' bd-group' : ''}`, style, 'data-bot': bot.id, 'data-kind': group ? 'group' : 'bot' },
+    { className: `bd${group ? ' bd-group' : ''}`, style, 'data-bot': bot.id, 'data-kind': group ? 'group' : 'bot', 'data-version': '0.4.3' },
     ...visible.slice(0, heroAt + 1).map(cardFor),
     customizing ? h(CardBoundary, { key: 'customize', label: 'editor', resetKey: bot.id }, h(CustomizePanel, { bot, onChanged: load, onClose: () => setCustomizing(false) })) : null,
     error ? h('div', { className: 'bd-error', key: 'err' }, `Showing the last loaded data. ${error}`) : null,
     ...visible.slice(heroAt + 1).map(cardFor),
     bot.brain ? null : h('div', { className: 'bd-error', key: 'brain' }, 'HermesBrain was not found, so tasks and projects are empty.'),
-    h('div', { className: 'bd-foot', key: 'foot' }, group ? `Following this group chat · ${bot.name}` : `Following @${bot.id}`)
+    h('div', { className: 'bd-foot', key: 'foot' },
+      group ? `Following this group chat · ${bot.name}` : `Following @${bot.id}`,
+      h('span', { className: 'bd-diag' },
+        `  ·  v0.4.5 · rooms ${rooms === null ? '…' : rooms} · in view ${typeof shownGroups === 'function' ? shownGroups().length : '?'}`))
   )
 }
 
