@@ -10,7 +10,8 @@ const { useCallback, useEffect, useMemo, useRef, useState } = React
 
 const PLUGIN_ID = 'bot-dashboard'
 const STYLE_ID = 'bot-dashboard-style'
-const REFRESH_MS = 30_000
+const REFRESH_MS = 60_000
+const STAMP_MS = 4_000
 
 let ctxRef = null
 
@@ -119,6 +120,34 @@ const CSS = `
 .bd-empty{padding:12px;text-align:center;color:var(--ui-text-tertiary);font-size:12.5px;border:1px dashed var(--ui-stroke-secondary);border-radius:9px}
 .bd-link{background:none;border:0;padding:0;color:var(--ui-text-secondary);font:inherit;font-size:12px;cursor:pointer;text-decoration:underline;align-self:flex-start}
 .bd-link:hover{color:var(--ui-text-primary)}
+.bd-group .bd-card{border-top:2px solid color-mix(in srgb,var(--bd-accent) 45%,var(--ui-stroke-secondary))}
+.bd-hero-group{padding-top:18px}
+.bd-group-strip{position:absolute;left:0;right:0;top:0;height:4px}
+.bd-stack{display:flex;align-items:center;padding-left:8px}
+.bd-stack-face{width:40px;height:40px;margin-left:-8px;border-radius:50%;overflow:hidden;flex:none;display:grid;place-items:center;
+  box-shadow:0 0 0 2px var(--ui-bg-card,var(--ui-bg-elevated));background:var(--ui-bg-elevated)}
+.bd-stack-face.gone{opacity:.4;filter:grayscale(1)}
+.bd-stack-face .bd-avatar,.bd-stack-face .bd-avatar-blob{width:40px;height:40px;border-radius:50%}
+.bd-stack-face .bd-avatar-fallback{font-size:15px}
+.bd-stack-more{font-size:12px;font-weight:700;color:var(--ui-text-primary)}
+.bd-kind{display:inline-flex;align-items:center;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:1px 6px;border-radius:4px;margin-right:6px;
+  color:var(--ui-text-primary);background:color-mix(in srgb,var(--bd-accent) 22%,transparent);border:1px solid color-mix(in srgb,var(--bd-accent) 45%,transparent)}
+.bd-hero-pills{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.bd-live{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 0 0 currentColor;animation:bd-pulse 1.8s infinite}
+@keyframes bd-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 60%,transparent)}70%{box-shadow:0 0 0 6px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@media (prefers-reduced-motion:reduce){.bd-live{animation:none}}
+.bd-member{align-items:center;border-left:3px solid var(--bd-member,transparent);padding-left:8px}
+.bd-member.gone .bd-row-title{text-decoration:line-through;color:var(--ui-text-secondary)}
+.bd-member.gone .bd-mface{opacity:.45;filter:grayscale(1)}
+.bd-mface{width:28px;height:28px;flex:none;line-height:0}
+.bd-mface .bd-avatar,.bd-mface .bd-avatar-blob{width:28px;height:28px}
+.bd-mface .bd-avatar-fallback{font-size:12px}
+.bd-event{align-items:flex-start}
+.bd-event-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:none;background:var(--bd-accent)}
+.bd-owners{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+.bd-owner{font-size:11px;padding:0 6px;border-radius:4px;color:var(--ui-text-secondary);border:1px solid var(--ui-stroke-secondary)}
+.bd-select{flex:1 1 100%;min-width:0}
+.bd-missing{padding:14px}.bd-missing-title{font-weight:600;font-size:14px;margin-bottom:4px}.bd-missing p{margin:0 0 10px;color:var(--ui-text-secondary)}
 .bd-error{padding:10px 12px;border-radius:9px;border:1px solid color-mix(in srgb,var(--ui-red) 45%,transparent);color:var(--ui-text-primary);
   background:color-mix(in srgb,var(--ui-red) 10%,transparent);font-size:12.5px}
 .bd-next{margin-top:5px;font-size:12px;color:var(--ui-text-secondary)}
@@ -243,6 +272,64 @@ function storageSet(key, value) {
 function rest(path, opts) {
   if (!ctxRef) return Promise.reject(new Error('Plugin is not ready.'))
   return ctxRef.rest(path, opts)
+}
+
+const DEFAULT_ORDER = ['profile', 'jobs', 'tasks', 'notes', 'projects']
+// A group has no jobs of its own; it shows the room and its members instead.
+const GROUP_ORDER = ['profile', 'members', 'activity', 'tasks', 'notes', 'projects']
+const isGroup = d => d?.kind === 'group'
+const noun = d => (isGroup(d) ? 'this group' : 'this bot')
+const arr = v => (Array.isArray(v) ? v : [])
+
+/** The REST payload, made safe to render: every list is a list and the panel
+ *  always has a layout, even when the server sent a partial or older shape. */
+function normalizeBot(data) {
+  const d = data && typeof data === 'object' ? data : {}
+  const panel = d.panel && typeof d.panel === 'object' ? d.panel : {}
+  const layout = panel.layout && typeof panel.layout === 'object' ? panel.layout : {}
+  const widgets = arr(panel.widgets).filter(w => w && w.id)
+  // Deduplicate, drop ids of widgets that no longer exist, and put back any
+  // built-in card or widget the stored order is missing (older or hand-edited files).
+  const known = new Set([...(isGroup(d) ? GROUP_ORDER : DEFAULT_ORDER), ...widgets.map(w => `w:${w.id}`)])
+  const order = [...new Set(arr(layout.order).filter(k => typeof k === 'string' && known.has(k)))]
+  for (const k of known) if (!order.includes(k)) order.push(k)
+  return {
+    ...d,
+    id: String(d.id || ''),
+    name: String(d.name || d.id || ''),
+    tasks: arr(d.tasks),
+    projects: arr(d.projects),
+    toolsets: arr(d.toolsets),
+    mcp: arr(d.mcp),
+    plugins: arr(d.plugins),
+    fallback: arr(d.fallback),
+    groups: arr(d.groups),
+    members: arr(d.members).filter(m => m && typeof m === 'object').map(m => ({ ...m, id: String(m.id || '?'), name: String(m.name || m.id || 'Member') })),
+    events: arr(d.events).filter(e => e && typeof e === 'object'),
+    panel: {
+      layout: { order, hidden: arr(layout.hidden).filter(k => typeof k === 'string' && k !== 'profile') },
+      widgets,
+      notes: arr(panel.notes).filter(n => n && n.id)
+    }
+  }
+}
+
+/** Keeps one broken card from blanking the whole pane. */
+class CardBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { failed: null }
+  }
+  static getDerivedStateFromError(err) {
+    return { failed: err }
+  }
+  componentDidUpdate(prev) {
+    if (this.state.failed && prev.resetKey !== this.props.resetKey) this.setState({ failed: null })
+  }
+  render() {
+    if (!this.state.failed) return this.props.children
+    return h('div', { className: 'bd-error' }, `The ${this.props.label || 'card'} could not be shown. ${errorText(this.state.failed)}`)
+  }
 }
 
 function errorText(err) {
@@ -564,6 +651,11 @@ function TasksWidget({ bot, onChanged }) {
   const [due, setDue] = useState('')
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState({})
+  // In a group the task list spans every member, and a new task goes to one of them.
+  const members = isGroup(bot) ? bot.members.filter(m => !m.missing && !m.remote) : null
+  const [owner, setOwner] = useState('')
+  const target = members ? (members.some(m => m.id === owner) ? owner : members[0]?.id || '') : bot.id
+  const nameOf = id => members?.find(m => m.id === id)?.name || id
   const open = bot.tasks.filter(t => t.status !== 'done')
   const done = bot.tasks.filter(t => t.status === 'done')
   const today = todayIso()
@@ -590,7 +682,8 @@ function TasksWidget({ bot, onChanged }) {
     if (!text) return
     setBusy(true)
     try {
-      await rest('/task', { method: 'POST', body: { bot: bot.id, title: text, due: due || null } })
+      if (!target) throw new Error('This group has no member who can own a task.')
+      await rest('/task', { method: 'POST', body: { bot: target, title: text, due: due || null } })
       setTitle('')
       setDue('')
       await onChanged()
@@ -621,6 +714,9 @@ function TasksWidget({ bot, onChanged }) {
         'div',
         { className: 'bd-row-main' },
         h('div', { className: 'bd-row-title' }, task.title),
+        members && arr(task.owners).length
+          ? h('div', { className: 'bd-owners' }, arr(task.owners).map(o => h('span', { key: o, className: 'bd-owner' }, nameOf(o))))
+          : null,
         task.due || task.priority !== 'normal'
           ? h(
               'div',
@@ -648,9 +744,11 @@ function TasksWidget({ bot, onChanged }) {
       botId: bot.id,
       title: 'Tasks',
       count: open.length,
-      info: 'TaskNotes in HermesBrain that carry bot: ' + bot.id + '. Tick a task to mark it done; the note in the vault updates. New tasks are saved as TaskNotes for this bot.'
+      info: members
+        ? 'Open TaskNotes owned by any member of this group. Tick a task to mark it done; the note in the vault updates. A new task is saved as a TaskNote for the member you pick.'
+        : 'TaskNotes in HermesBrain that carry bot: ' + bot.id + '. Tick a task to mark it done; the note in the vault updates. New tasks are saved as TaskNotes for this bot.'
     },
-    open.length === 0 ? h(Empty, null, 'No open tasks for this bot.') : open.map(row),
+    open.length === 0 ? h(Empty, null, members ? 'No open tasks for any member.' : 'No open tasks for this bot.') : open.map(row),
     done.length
       ? h(
           'button',
@@ -664,7 +762,7 @@ function TasksWidget({ bot, onChanged }) {
       { className: 'bd-add', onSubmit: add },
       h('input', {
         className: 'desktop-input-chrome bd-input',
-        placeholder: 'Add a task for this bot',
+        placeholder: members ? 'Add a task for a member' : 'Add a task for this bot',
         'aria-label': 'New task title',
         value: title,
         maxLength: 200,
@@ -678,7 +776,16 @@ function TasksWidget({ bot, onChanged }) {
         value: due,
         onChange: e => setDue(e.target.value)
       }),
-      h('button', { type: 'submit', className: 'bd-btn primary', disabled: busy || !title.trim() }, busy ? '…' : 'Add')
+      members && members.length > 1
+        ? h('select', {
+            className: 'desktop-input-chrome bd-input bd-select',
+            'aria-label': 'Member who owns the task',
+            title: 'Member who owns the task',
+            value: target,
+            onChange: e => setOwner(e.target.value)
+          }, members.map(m => h('option', { key: m.id, value: m.id }, m.name)))
+        : null,
+      h('button', { type: 'submit', className: 'bd-btn primary', disabled: busy || !title.trim() || !target }, busy ? '…' : 'Add')
     )
   )
 }
@@ -692,10 +799,12 @@ function ProjectsWidget({ bot }) {
       botId: bot.id,
       title: 'Projects',
       count: bot.projects.length,
-      info: `Project notes in HermesBrain/02 Projects that carry bot: ${bot.id}. A project not updated for ${14} days or more is flagged as stale.`
+      info: isGroup(bot)
+        ? `Project notes in HermesBrain/02 Projects owned by any member of this group. A project not updated for ${14} days or more is flagged as stale.`
+        : `Project notes in HermesBrain/02 Projects that carry bot: ${bot.id}. A project not updated for ${14} days or more is flagged as stale.`
     },
     bot.projects.length === 0
-      ? h(Empty, null, 'No projects are linked to this bot.')
+      ? h(Empty, null, isGroup(bot) ? 'No projects are linked to any member.' : 'No projects are linked to this bot.')
       : bot.projects.map(p =>
           h(
             'div',
@@ -707,7 +816,8 @@ function ProjectsWidget({ bot }) {
                 'div',
                 { style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } },
                 h('span', { className: 'bd-row-title' }, p.name),
-                h('span', { className: `bd-pill ${tone(p.status)}` }, p.status)
+                h('span', { className: `bd-pill ${tone(p.status)}` }, p.status),
+                isGroup(bot) && p.owner ? h('span', { className: 'bd-owner' }, bot.members.find(m => m.id === p.owner)?.name || p.owner) : null
               ),
               p.next
                 ? h('div', { className: 'bd-next' }, h('b', null, 'Next: '), p.next)
@@ -773,14 +883,16 @@ function NotesWidget({ bot, onChanged }) {
       botId: bot.id,
       title: 'Notes',
       count: notes.length,
-      info: 'Notes shared between you and this bot. You can write here; the bot reads and writes the same notes with its bot_panel tool. Pinned notes stay on top.'
+      info: isGroup(bot)
+        ? 'Notes for this group, kept with the room on this computer. Use them for decisions, links and hand-offs between members. Pinned notes stay on top.'
+        : 'Notes shared between you and this bot. You can write here; the bot reads and writes the same notes with its bot_panel tool. Pinned notes stay on top.'
     },
     h(
       'form',
       { className: 'bd-note-add', onSubmit: add },
       h('textarea', {
         className: 'desktop-input-chrome bd-input bd-textarea',
-        placeholder: 'Write a note for this bot',
+        placeholder: `Write a note for ${noun(bot)}`,
         'aria-label': 'New note',
         rows: 2,
         value: text,
@@ -973,7 +1085,7 @@ function WidgetEditor({ bot, widget, onDone, onChanged }) {
   )
 }
 
-const CARD_LABELS = { profile: 'Profile', jobs: 'Scheduled jobs', tasks: 'Tasks', notes: 'Notes', projects: 'Projects' }
+const CARD_LABELS = { profile: 'Profile', jobs: 'Scheduled jobs', tasks: 'Tasks', notes: 'Notes', projects: 'Projects', members: 'Members', activity: 'Activity' }
 
 function CustomizePanel({ bot, onChanged, onClose }) {
   const panel = bot.panel || { layout: { order: [], hidden: [] }, widgets: [] }
@@ -1011,7 +1123,7 @@ function CustomizePanel({ bot, onChanged, onClose }) {
   const toggle = key => persist(order, hidden.includes(key) ? hidden.filter(k => k !== key) : [...hidden, key])
 
   const removeWidget = async w => {
-    if (!window.confirm(`Remove the widget “${w.title}” from this panel?`)) return
+    if (!window.confirm(`Remove the widget “${w.title}” from ${noun(bot)}'s panel?`)) return
     try {
       await rest('/panel/widget/remove', { method: 'POST', body: { bot: bot.id, id: w.id } })
       await onChanged()
@@ -1027,7 +1139,9 @@ function CustomizePanel({ bot, onChanged, onClose }) {
   return h(
     'div',
     { className: 'bd-editor', role: 'region', 'aria-label': 'Customize this panel' },
-    h('div', { className: 'bd-editor-title' }, `Customize @${bot.id}'s panel`, h(Info, { text: 'Reorder cards with the arrows, hide the ones you do not need, and add or edit custom widgets. Changes save to this bot\'s profile, so the bot sees the same layout.' })),
+    h('div', { className: 'bd-editor-title' }, isGroup(bot) ? `Customize ${bot.name}` : `Customize @${bot.id}'s panel`, h(Info, { text: isGroup(bot)
+      ? 'Reorder cards with the arrows, hide the ones you do not need, and add or edit custom widgets. The layout is saved for this group only.'
+      : 'Reorder cards with the arrows, hide the ones you do not need, and add or edit custom widgets. Changes save to this bot\'s profile, so the bot sees the same layout.' })),
     order.map((key, i) => {
       const w = widgetFor(key)
       const isHidden = hidden.includes(key)
@@ -1048,6 +1162,234 @@ function CustomizePanel({ bot, onChanged, onClose }) {
   )
 }
 
+
+// ---------------------------------------------------------------- groups
+
+const epochIso = s => (typeof s === 'number' && s > 0 ? new Date(s * 1000).toISOString() : '')
+const humanKind = k => {
+  const t = String(k || 'event').replace(/[._-]+/g, ' ').trim()
+  return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
+/** Member colours as a gradient, so a group reads as "many bots" at a glance. */
+function groupGradient(members) {
+  const colors = [...new Set(members.map(m => m.color).filter(c => /^#[0-9a-f]{3,8}$/i.test(c || '')))]
+  if (colors.length === 0) return 'var(--ui-accent)'
+  if (colors.length === 1) return colors[0]
+  return `linear-gradient(90deg, ${colors.map((c, i) => `${c} ${Math.round((i / (colors.length - 1)) * 100)}%`).join(', ')})`
+}
+
+function AvatarStack({ members, max = 5 }) {
+  const shown = members.slice(0, max)
+  const extra = members.length - shown.length
+  return h(
+    'div',
+    { className: 'bd-stack', 'aria-label': `${members.length} members` },
+    shown.map(m => h('span', { key: m.id, className: `bd-stack-face${m.missing ? ' gone' : ''}`, title: m.name }, h(BotAvatar, { bot: m }))),
+    extra > 0 ? h('span', { className: 'bd-stack-face bd-stack-more', title: members.slice(max).map(m => m.name).join(', ') }, `+${extra}`) : null
+  )
+}
+
+function GroupHero({ bot, loading, onRefresh, onCustomize, customizing }) {
+  const members = bot.members
+  const gone = members.filter(m => m.missing).length
+  const status = bot.disbanded
+    ? h('span', { className: 'bd-pill bad', title: 'The room was disbanded. History stays readable.' }, 'Disbanded')
+    : bot.live
+      ? h('span', { className: 'bd-pill ok', title: 'A gateway is driving this room now.' }, h('span', { className: 'bd-live' }), 'Live')
+      : h('span', { className: 'bd-pill muted', title: 'No gateway is driving this room right now. It wakes when someone posts.' }, 'Idle')
+  return h(
+    'header',
+    { className: 'bd-hero bd-hero-group' },
+    h('div', { className: 'bd-group-strip', style: { background: groupGradient(members) }, 'aria-hidden': true }),
+    h('button', { className: `bd-iconbtn${customizing ? ' on' : ''}`, type: 'button', style: { right: 44 }, title: 'Customize this panel', 'aria-label': 'Customize this panel', 'aria-pressed': !!customizing, onClick: onCustomize }, '✎'),
+    h('button', { className: 'bd-iconbtn', type: 'button', title: 'Refresh the dashboard', 'aria-label': 'Refresh the dashboard', onClick: onRefresh },
+      h('span', { className: loading ? 'bd-spin' : '', style: { display: 'inline-block' } }, '↻')),
+    h(AvatarStack, { members }),
+    h(
+      'div',
+      { style: { minWidth: 0, paddingRight: 4, marginTop: 10 } },
+      h('h2', { className: 'bd-name', title: bot.name }, bot.name),
+      h('div', { className: 'bd-section' }, h('span', { className: 'bd-kind' }, 'Group'), `${members.length} member${members.length === 1 ? '' : 's'}`)
+    ),
+    h('div', { className: 'bd-hero-pills' },
+      status,
+      bot.running ? h('span', { className: 'bd-pill warn', title: 'Member turns queued or running in this room.' }, `${bot.running} running`) : null,
+      gone ? h('span', { className: 'bd-pill bad', title: 'Members whose bot profile was deleted or renamed.' }, `${gone} missing`) : null),
+    h(
+      'dl',
+      { className: 'bd-facts', title: 'Read from the room record in Hermes' },
+      h('dt', null, 'Members'),
+      h('dd', { className: 'plain', title: members.map(m => m.name).join(', ') }, members.map(m => m.name).join(', ') || 'None'),
+      h('dt', null, 'Activity'),
+      h('dd', { className: 'plain' }, bot.eventCount ? `${bot.eventCount} event${bot.eventCount === 1 ? '' : 's'}` : 'None yet'),
+      bot.updatedAt ? h('dt', null, 'Updated') : null,
+      bot.updatedAt ? h('dd', { className: 'plain', title: epochIso(bot.updatedAt) }, relative(epochIso(bot.updatedAt))) : null,
+      bot.createdAt ? h('dt', null, 'Created') : null,
+      bot.createdAt ? h('dd', { className: 'plain', title: epochIso(bot.createdAt) }, new Date(bot.createdAt * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })) : null
+    ),
+    bot.disbanded ? h('p', { className: 'bd-desc' }, 'This group was disbanded. Its notes and history stay here; members no longer reply in it.') : null
+  )
+}
+
+function MembersWidget({ bot }) {
+  const openTasks = id => bot.tasks.filter(t => t.status !== 'done' && arr(t.owners).includes(id)).length
+  return h(
+    Card,
+    {
+      id: 'members',
+      botId: bot.id,
+      title: 'Members',
+      count: bot.members.length,
+      info: 'The bots in this room, as set in the group settings. Each row shows the member’s model and open tasks. A member marked Missing had its bot deleted or renamed; edit the group to remove or replace it.'
+    },
+    bot.members.length === 0
+      ? h(Empty, null, 'This group has no members.')
+      : bot.members.map(m => {
+          const n = m.missing || m.remote ? 0 : openTasks(m.id)
+          return h(
+            'div',
+            { className: `bd-row bd-member${m.missing ? ' gone' : ''}`, key: m.id, style: m.color ? { '--bd-member': m.color } : undefined },
+            h('span', { className: 'bd-mface' }, h(BotAvatar, { bot: m })),
+            h(
+              'div',
+              { className: 'bd-row-main' },
+              h('div', { className: 'bd-row-title' }, m.name),
+              h('div', { className: 'bd-row-sub', title: m.model || '' }, `@${m.handle || m.id}`, m.model ? ` · ${m.model}` : '')
+            ),
+            m.missing
+              ? h('span', { className: 'bd-pill bad', title: 'This bot was deleted or renamed.' }, 'Missing')
+              : m.remote
+                ? h('span', { className: 'bd-pill muted', title: 'This member runs on another machine.' }, 'Remote')
+                : n
+                  ? h('span', { className: 'bd-pill muted', title: `${n} open task${n === 1 ? '' : 's'}` }, `${n} task${n === 1 ? '' : 's'}`)
+                  : null
+          )
+        })
+  )
+}
+
+function ActivityWidget({ bot }) {
+  const events = bot.events
+  return h(
+    Card,
+    {
+      id: 'activity',
+      botId: bot.id,
+      title: 'Activity',
+      count: bot.eventCount || null,
+      info: 'The latest events in this room: messages, member turns and setting changes, newest first. The full conversation stays in the group chat.'
+    },
+    events.length === 0
+      ? h(Empty, null, bot.disbanded ? 'No activity was recorded before the group was disbanded.' : 'No room activity yet. Post in the group chat to start.')
+      : events.map(e =>
+          h(
+            'div',
+            { className: 'bd-row bd-event', key: e.seq ?? `${e.kind}-${e.at}` },
+            h('span', { className: 'bd-event-dot', 'aria-hidden': true }),
+            h('div', { className: 'bd-row-main' },
+              h('div', { className: 'bd-row-title' }, humanKind(e.kind)),
+              h('div', { className: 'bd-row-sub' }, [e.actor, relative(epochIso(e.at))].filter(Boolean).join(' · ')))
+          )
+        )
+  )
+}
+
+// ---------------------------------------------------------------- focus
+
+// The group chat view marks its container with the room's owner key
+// ("group:id:<roomId>" or, for older rooms, "group:name:<name>").
+const GROUP_SEL = '[data-preview-annotate-destination="group"][data-preview-annotate-owner-key]'
+
+function shownGroups() {
+  const mine = document.querySelector('.bd')?.closest('[data-pane-host]')
+  const myZone = mine?.getAttribute('data-tree-group')
+  const out = []
+  for (const el of document.querySelectorAll(GROUP_SEL)) {
+    const key = el.getAttribute('data-preview-annotate-owner-key')
+    const pane = el.closest('[data-pane-host]')
+    const hidden = pane?.classList.contains('invisible')
+    // A group docked as a tab beside this pane is hidden while the dashboard
+    // tab is active; it still counts as the chat being followed.
+    const sameZone = hidden && myZone && pane?.getAttribute('data-tree-group') === myZone
+    if (!key || (hidden && !sameZone)) continue
+    if (!hidden) {
+      const r = el.getBoundingClientRect()
+      if (r.width < 2 || r.height < 2) continue
+    }
+    out.push(key)
+  }
+  return out
+}
+
+/** What the pane follows: the focused bot, or a group chat when one is in front.
+ *  A group wins when it opens or is clicked; a bot wins when its chat is
+ *  clicked or the focused bot changes with no group opening at the same time. */
+function useFocusTarget() {
+  const botId = useBotId()
+  const [group, setGroup] = useState(null)
+  const cur = useRef(null)
+  const seen = useRef([])
+  const lastGroupShown = useRef(0)
+
+  useEffect(() => {
+    const set = k => {
+      if (k !== cur.current) {
+        cur.current = k
+        setGroup(k)
+      }
+    }
+    const sync = () => {
+      const keys = shownGroups()
+      const fresh = keys.filter(k => !seen.current.includes(k))
+      seen.current = keys
+      if (fresh.length) {
+        lastGroupShown.current = Date.now()
+        set(fresh[fresh.length - 1])
+      } else if (cur.current && !keys.includes(cur.current)) {
+        set(null)
+      }
+    }
+    const onPointer = e => {
+      const t = e.target instanceof Element ? e.target : null
+      if (!t) return
+      const g = t.closest(GROUP_SEL)
+      if (g) return set(g.getAttribute('data-preview-annotate-owner-key'))
+      const pane = t.closest('[data-pane-host]')
+      const id = pane?.getAttribute('data-pane-host') || ''
+      if (id === 'workspace' || (id.startsWith('plugin-workspace:') && !id.includes(':group:'))) set(null)
+    }
+    sync()
+    const timer = setInterval(sync, 700)
+    document.addEventListener('pointerdown', onPointer, true)
+    document.addEventListener('focusin', onPointer, true)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('pointerdown', onPointer, true)
+      document.removeEventListener('focusin', onPointer, true)
+    }
+  }, [])
+
+  // Picking a bot in the roster changes the focused profile; unless a group
+  // opened in the same moment, follow the bot.
+  const first = useRef(true)
+  useEffect(() => {
+    if (first.current) {
+      first.current = false
+      return
+    }
+    const t = setTimeout(() => {
+      if (Date.now() - lastGroupShown.current > 900) {
+        cur.current = null
+        setGroup(null)
+      }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [botId])
+
+  return group ? { kind: 'group', key: group } : { kind: 'bot', key: botId }
+}
+
 // ---------------------------------------------------------------- pane
 
 function useBotId() {
@@ -1057,9 +1399,12 @@ function useBotId() {
   return id === 'default' || !id ? 'hermes' : id
 }
 
-function BotDashboard() {
-  const botId = useBotId()
-  const [bot, setBot] = useState(null)
+function Dashboard({ target }) {
+  const { kind, key: botId } = target
+  const group = kind === 'group'
+  const base = group ? '/group' : ''
+  const [state, setState] = useState({ key: null, data: null })
+  const bot = state.key === `${kind}:${botId}` ? state.data : null
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const seq = useRef(0)
@@ -1068,9 +1413,9 @@ function BotDashboard() {
     const mine = ++seq.current
     setLoading(true)
     try {
-      const data = await rest(`/bot?id=${encodeURIComponent(botId)}`)
+      const data = await rest(`${group ? '/group' : '/bot'}?id=${encodeURIComponent(botId)}`)
       if (mine !== seq.current) return
-      setBot(data)
+      setState({ key: `${kind}:${botId}`, data: normalizeBot(data) })
       setError('')
     } catch (err) {
       if (mine !== seq.current) return
@@ -1078,59 +1423,106 @@ function BotDashboard() {
     } finally {
       if (mine === seq.current) setLoading(false)
     }
-  }, [botId])
+  }, [botId, kind, group])
 
   useEffect(() => {
-    setBot(b => (b && b.id === botId ? b : null))
+    setError('')
     load()
-    const t = setInterval(load, REFRESH_MS)
-    return () => clearInterval(t)
-  }, [load, botId])
+    // Cheap change check every few seconds (edits, deletes, renames, new tasks,
+    // room changes), plus a slow full refresh for anything the marker misses.
+    let last = null
+    let stopped = false
+    const check = async () => {
+      if (document.hidden) return
+      try {
+        const { stamp } = await rest(`${base}/stamp?id=${encodeURIComponent(botId)}`)
+        if (stopped) return
+        if (last !== null && stamp !== last) load()
+        last = stamp
+      } catch {
+        /* the full refresh still runs */
+      }
+    }
+    check()
+    const fast = setInterval(check, STAMP_MS)
+    const slow = setInterval(load, REFRESH_MS)
+    return () => {
+      stopped = true
+      clearInterval(fast)
+      clearInterval(slow)
+    }
+  }, [load, botId, base])
 
   const [customizing, setCustomizing] = useState(false)
-  useEffect(() => setCustomizing(false), [botId])
+  useEffect(() => setCustomizing(false), [botId, kind])
 
-  const style = useMemo(() => (bot?.color ? { '--bd-accent': bot.color } : undefined), [bot?.color])
+  const accent = group ? bot?.members?.find(m => m.color)?.color : bot?.color
+  const style = useMemo(() => (accent ? { '--bd-accent': accent } : undefined), [accent])
+
+  if (bot && bot.missing) {
+    const title = group
+      ? bot.reason === 'invalid' ? 'This group could not be read' : 'This group is no longer here'
+      : bot.reason === 'invalid' ? 'This chat has no bot profile' : `@${botId} is no longer here`
+    const body = group
+      ? 'The group was deleted, or its room has not reached this computer yet. Open a chat from the Bots list to see its dashboard.'
+      : bot.reason === 'invalid'
+        ? 'Open a bot from the Bots list to see its dashboard.'
+        : 'The bot was deleted or renamed. Open a bot from the Bots list to see its dashboard.'
+    return h('div', { className: `bd${group ? ' bd-group' : ''}`, 'data-bot': botId },
+      h('div', { className: 'bd-card bd-missing' },
+        h('div', { className: 'bd-missing-title' }, title),
+        h('p', null, body),
+        h('button', { type: 'button', className: 'bd-btn', onClick: load, disabled: loading }, loading ? 'Checking…' : 'Check again')))
+  }
 
   if (!bot) {
     return h(
       'div',
-      { className: 'bd' },
+      { className: `bd${group ? ' bd-group' : ''}` },
       error
         ? h(
             'div',
             { className: 'bd-error' },
-            `The dashboard for @${botId} could not load. ${error} `,
+            `The dashboard for ${group ? 'this group' : `@${botId}`} could not load. ${error} `,
             h('button', { type: 'button', className: 'bd-btn', onClick: load, style: { marginTop: 8 } }, 'Try again')
           )
         : [h('div', { className: 'bd-skeleton', key: 1, style: { height: 150 } }), h('div', { className: 'bd-skeleton', key: 2 }), h('div', { className: 'bd-skeleton', key: 3 })]
     )
   }
 
-  const layout = bot.panel?.layout || { order: ['profile', 'jobs', 'tasks', 'notes', 'projects'], hidden: [] }
-  const widgets = bot.panel?.widgets || []
-  const cardFor = key => {
-    if (key === 'profile') return h(Hero, { key, bot, loading, onRefresh: load, onCustomize: () => setCustomizing(c => !c), customizing })
-    if (key === 'jobs') return h(JobsWidget, { key, botId: bot.id })
-    if (key === 'tasks') return h(TasksWidget, { key, bot, onChanged: load })
-    if (key === 'notes') return h(NotesWidget, { key, bot, onChanged: load })
-    if (key === 'projects') return h(ProjectsWidget, { key, bot })
+  const layout = bot.panel.layout
+  const widgets = bot.panel.widgets
+  const cardFor = key => h(CardBoundary, { key, label: key.startsWith('w:') ? 'widget' : `${CARD_LABELS[key] || key} card`, resetKey: `${bot.id}:${key}` }, cardBody(key))
+  const cardBody = key => {
+    const heroProps = { bot, loading, onRefresh: load, onCustomize: () => setCustomizing(c => !c), customizing }
+    if (key === 'profile') return h(group ? GroupHero : Hero, heroProps)
+    if (key === 'jobs' && !group) return h(JobsWidget, { botId: bot.id })
+    if (key === 'members' && group) return h(MembersWidget, { bot })
+    if (key === 'activity' && group) return h(ActivityWidget, { bot })
+    if (key === 'tasks') return h(TasksWidget, { bot, onChanged: load })
+    if (key === 'notes') return h(NotesWidget, { bot, onChanged: load })
+    if (key === 'projects') return h(ProjectsWidget, { bot })
     const w = widgets.find(x => `w:${x.id}` === key)
-    return w ? h(CustomWidget, { key, bot, widget: w }) : null
+    return w ? h(CustomWidget, { bot, widget: w }) : null
   }
   const visible = layout.order.filter(k => k === 'profile' || !layout.hidden.includes(k))
-  const heroAt = visible.indexOf('profile')
+  const heroAt = Math.max(0, visible.indexOf('profile'))
 
   return h(
     'div',
-    { className: 'bd', style, 'data-bot': bot.id },
+    { className: `bd${group ? ' bd-group' : ''}`, style, 'data-bot': bot.id, 'data-kind': group ? 'group' : 'bot' },
     ...visible.slice(0, heroAt + 1).map(cardFor),
-    customizing ? h(CustomizePanel, { key: 'customize', bot, onChanged: load, onClose: () => setCustomizing(false) }) : null,
+    customizing ? h(CardBoundary, { key: 'customize', label: 'editor', resetKey: bot.id }, h(CustomizePanel, { bot, onChanged: load, onClose: () => setCustomizing(false) })) : null,
     error ? h('div', { className: 'bd-error', key: 'err' }, `Showing the last loaded data. ${error}`) : null,
     ...visible.slice(heroAt + 1).map(cardFor),
     bot.brain ? null : h('div', { className: 'bd-error', key: 'brain' }, 'HermesBrain was not found, so tasks and projects are empty.'),
-    h('div', { className: 'bd-foot', key: 'foot' }, `Follows the chat in focus · @${bot.id}`)
+    h('div', { className: 'bd-foot', key: 'foot' }, group ? `Follows the chat in focus · Group: ${bot.name}` : `Follows the chat in focus · @${bot.id}`)
   )
+}
+
+function BotDashboard() {
+  const target = useFocusTarget()
+  return h(Dashboard, { target })
 }
 
 function Pane() {

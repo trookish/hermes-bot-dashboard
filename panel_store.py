@@ -34,6 +34,8 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 BUILTIN = ["profile", "jobs", "tasks", "notes", "projects"]
+# A group dashboard has no jobs of its own; it shows the room and its members.
+GROUP_BUILTIN = ["profile", "members", "activity", "tasks", "notes", "projects"]
 MAX_HTML = 200_000
 MAX_NOTE = 4_000
 MAX_NOTES = 300
@@ -78,12 +80,19 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 class Panel:
-    def __init__(self, home: Path):
-        self.dir = Path(home) / "panel"
+    def __init__(self, home: Path, create_home: bool = False, builtin: Optional[list] = None):
+        self.builtin = list(builtin or BUILTIN)
+        self.home = Path(home)
+        self.dir = self.home / "panel"
+        # A bot's profile folder must already exist: writing into a deleted (or
+        # renamed) profile would silently recreate it as an empty shell.
+        self.create_home = create_home
 
     @contextlib.contextmanager
     def _locked(self):
         """Serialize writers across threads AND processes (agent + dashboard)."""
+        if not self.create_home and not self.home.is_dir():
+            raise PanelError("This bot no longer exists. It was deleted or renamed.")
         self.dir.mkdir(parents=True, exist_ok=True)
         with _LOCK:
             fh = open(self.dir / ".lock", "a+b")
@@ -218,9 +227,9 @@ class Panel:
         raw = self._read("layout.json", {})
         order = [k for k in raw.get("order", []) if isinstance(k, str)] if isinstance(raw, dict) else []
         hidden = [k for k in raw.get("hidden", []) if isinstance(k, str)] if isinstance(raw, dict) else []
-        known = set(BUILTIN) | {f"w:{w['id']}" for w in self.widgets()}
+        known = set(self.builtin) | {f"w:{w['id']}" for w in self.widgets()}
         order = [k for k in dict.fromkeys(order) if k in known]
-        for k in BUILTIN + [f"w:{w['id']}" for w in self.widgets()]:
+        for k in self.builtin + [f"w:{w['id']}" for w in self.widgets()]:
             if k not in order:
                 order.append(k)
         return {"order": order, "hidden": [k for k in hidden if k in known and k != "profile"]}
