@@ -38,13 +38,20 @@ Restart Hermes Desktop after installing. The panes appear in the right sidebar:
 - The **Group** pane lists the group chats recorded in your Hermes profile. Rooms
   that a member bot hosts are opened read-only; nothing is written to them.
 
-## Agent tool
+## Agent tools
 
-The plugin registers one tool, `bot_panel`, so a bot can read and edit its own
-panel when you ask: add or update a widget, pin an HTML view it built, write a
-note, or reorder and hide cards. It also registers a `pre_llm_call` hook that
-tells the bot its panel exists — on the first turn only, or when your message
-mentions the panel, so it costs nothing the rest of the time.
+Two tools, so any bot can work with its dashboards when you ask:
+
+| Tool | Scope |
+| --- | --- |
+| `bot_panel` | The bot's own pane: read the layout, add, update or remove a widget, write or pin a note, reorder or hide cards. |
+| `group_dashboard` | A group chat's pane: `list_groups`, then `view` (members, activity, tasks, projects, notes, widgets) or edit it — add a widget, leave a note, tidy the layout. Any member bot of that group can use it. |
+
+Both return JSON, never raise, and degrade to a plain error message when a file
+is busy or a group no longer exists. The plugin also registers one
+`pre_llm_call` hook that tells the bot the panes exist — on the first turn only,
+or when your message mentions the panel, so it costs nothing the rest of the
+time.
 
 Custom widgets render in a sandboxed iframe (`sandbox="allow-scripts"`, no
 same-origin access) with the live theme injected. A widget taller than its frame

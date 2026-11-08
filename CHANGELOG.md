@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0
+
+- **Tool calling for both dashboards.** `bot_panel` covers the bot's own pane,
+  and the new `group_dashboard` tool covers a group chat's pane — `list_groups`,
+  `view` (members, activity, tasks, projects, notes, widgets), and the same
+  widget, note and layout edits. Any member bot can use it.
+- Unknown or disbanded groups answer with a clear message instead of an HTTP
+  error.
+
 ## 1.0.0
 
 First public release. One plugin, two panes.
