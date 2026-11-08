@@ -153,7 +153,6 @@ const CSS = `
 .bd-next{margin-top:5px;font-size:12px;color:var(--ui-text-secondary)}
 .bd-next b{color:var(--ui-text-tertiary);font-weight:600}
 .bd-foot{font-size:11px;color:var(--ui-text-quaternary,var(--ui-text-tertiary));text-align:center}
-.bd-diag{opacity:.75}
 .bd-skeleton{height:64px;border-radius:12px;background:linear-gradient(90deg,var(--ui-bg-secondary),var(--ui-bg-tertiary),var(--ui-bg-secondary));
   background-size:200% 100%;animation:bd-sh 1.2s infinite}
 @keyframes bd-sh{to{background-position:-200% 0}}
@@ -177,6 +176,19 @@ const CSS = `
   background:var(--ui-bg-elevated);color:var(--ui-text-primary);box-shadow:0 20px 60px rgba(0,0,0,.45);overflow:hidden}
 .bd-overlay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--ui-stroke-secondary)}
 .bd-overlay-body{padding:14px;overflow:auto;min-height:0}
+.bd-member.bd-link{cursor:pointer}
+.bd-member.bd-link:hover{background:var(--ui-bg-hover,var(--ui-bg-elevated))}
+.bd-member.bd-link:hover .bd-row-title{text-decoration:underline;text-underline-offset:2px}
+.bd-member.bd-link:focus-visible{outline:1px solid var(--bd-accent);outline-offset:-1px;border-radius:8px}
+.bd-groups{display:flex;flex-direction:column;height:100%;min-height:0}
+.bd-pick{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--ui-stroke-secondary);flex:none}
+.bd-select{flex:1;min-width:0;font:inherit;font-size:12px;padding:4px 6px;border-radius:8px;border:1px solid var(--ui-stroke-secondary);
+  background:var(--ui-bg-card,var(--ui-bg-elevated));color:var(--ui-text-primary)}
+.bd-select:focus-visible{outline:1px solid var(--bd-accent);outline-offset:1px}
+.bd-refresh{flex:none;min-width:28px;padding:4px 8px}
+.bd-groups>.bd{flex:1;min-height:0}
+.bd-group-empty{padding-top:16px}
+.bd-win-body>.bd{flex:1}
 .bd-editor{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;border:1.5px solid var(--bd-accent);
   background:color-mix(in srgb,var(--bd-accent) 6%,var(--ui-bg-card,var(--ui-bg-elevated)))}
 .bd-editor-title{display:flex;align-items:center;gap:8px;font-weight:650}
@@ -410,46 +422,15 @@ function blobFace(shape, name) {
   }
 }
 
-// Non-blob faces (squircle, platonic solids, sigils) are drawn by the roster
-// itself; copy its rendered SVG so both always look the same.
-function rosterFace(id) {
-  try {
-    const sel = `svg[data-bot-face="${CSS.escape(id)}"]`
-    const svg = document.querySelector(`[data-slot="profile-rail"] ${sel}`) || document.querySelector(sel)
-    if (!svg) return null
-    const copy = svg.cloneNode(true)
-    copy.removeAttribute('width')
-    copy.removeAttribute('height')
-    copy.setAttribute('data-bot-face', `bd-${id}`)
-    return copy.outerHTML
-  } catch {
-    return null
-  }
-}
-
 function BotAvatar({ bot }) {
   const photo = bot.avatar && !bot.avatarBackfill && bot.imageKind !== 'shape' ? bot.avatar : null
-  const shape = bot.shape || ''
-  const isBlob = shape === 'blobatar' || shape.startsWith('blobatar:')
   const faceName = bot.id === 'hermes' ? 'default' : bot.id
-  const blob = useMemo(() => (photo || !isBlob ? null : blobFace(shape, bot.id)), [photo, isBlob, shape, bot.id])
-  const [copied, setCopied] = useState(null)
-
-  useEffect(() => {
-    setCopied(null)
-    if (photo || blob) return
-    let tries = 0
-    const grab = () => {
-      const markup = rosterFace(faceName)
-      if (markup) setCopied(markup)
-      else if (++tries < 10) t = setTimeout(grab, 400)
-    }
-    let t = setTimeout(grab, 0)
-    return () => clearTimeout(t)
-  }, [photo, blob, faceName, bot.shape, bot.color])
+  // Blob faces reproduce the roster exactly (same seed, same trait). Other face
+  // kinds are drawn by the app itself, which plugins may not read — they get a
+  // stable stand-in blob seeded from the bot id instead.
+  const markup = useMemo(() => (photo ? null : blobFace(bot.shape, bot.id) || blobFace('', faceName)), [photo, bot.shape, bot.id, faceName])
 
   if (photo) return h('img', { className: 'bd-avatar', src: photo, alt: '' })
-  const markup = blob || copied
   if (markup) return h('span', { className: 'bd-avatar-blob', 'aria-hidden': true, dangerouslySetInnerHTML: { __html: markup } })
   if (bot.avatar) return h('img', { className: 'bd-avatar', src: bot.avatar, alt: '' })
   return h('div', { className: 'bd-avatar bd-avatar-fallback' }, (bot.name || bot.id || '?').trim().slice(0, 1).toUpperCase())
@@ -966,46 +947,30 @@ function themeCss(accent) {
   return `:root{${vars}color-scheme:light dark}html,body{margin:0;padding:0;background:transparent;color:var(--foreground);font-family:${body.fontFamily};font-size:13px}html.bd-fit{overflow:hidden}`
 }
 
-// Reports height to the parent and scales content wider than the frame down to fit.
-const FIT_SCRIPT = `<script>(function(){var id=%ID%,last=-1;function fit(){var b=document.body,de=document.documentElement;if(!b)return;var w=de.clientWidth;if(w<40)return;b.style.zoom='';var s=Math.max(b.scrollWidth,de.scrollWidth),z=s>w+2?Math.max(0.2,w/s):1,raw=Math.max(b.scrollHeight,b.getBoundingClientRect().height);if(raw<1)return;if(z<1)b.style.zoom=String(z);var hgt=Math.ceil(raw*z)+2;if(hgt!==last){last=hgt;parent.postMessage({bdWidget:id,height:hgt},'*')}}var q=0;function soon(){if(q)return;q=setTimeout(function(){q=0;fit()},30)}window.addEventListener('load',fit);window.addEventListener('resize',soon);if(window.ResizeObserver){new ResizeObserver(soon).observe(document.documentElement)}new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var r=rs[i];if(!(r.type==='attributes'&&r.target===document.body&&r.attributeName==='style')){soon();return}}}).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});setTimeout(fit,50);setTimeout(fit,600);setTimeout(fit,1500)})();<\/script>`
-
 function buildDoc(widget, accent, large = false) {
   const html = widget.html || ''
-  const head = `<meta charset="utf-8"><style>${themeCss(accent)}</style><script>document.documentElement.classList.add('bd-fit')<\/script>`
-  const script = FIT_SCRIPT.replace('%ID%', JSON.stringify(widget.id)) + (large ? '<style>body{padding:4px}html.bd-fit{overflow:auto}</style>' : '')
+  const head = `<meta charset="utf-8"><style>${themeCss(accent)}</style>${
+    large ? '<style>body{padding:4px}</style>' : '<style>html,body{overflow:auto}</style>'
+  }`
   if (/<html[\s>]/i.test(html)) {
-    let doc = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + head) : html.replace(/<html[^>]*>/i, m => m + '<head>' + head + '</head>')
-    doc = /<\/body>/i.test(doc) ? doc.replace(/<\/body>/i, script + '</body>') : doc + script
-    return doc
+    return /<head[^>]*>/i.test(html)
+      ? html.replace(/<head[^>]*>/i, m => m + head)
+      : html.replace(/<html[^>]*>/i, m => m + '<head>' + head + '</head>')
   }
-  return `<!doctype html><html><head>${head}</head><body>${html}${script}</body></html>`
+  return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`
 }
 
 function WidgetFrame({ widget, accent, large = false }) {
-  const frameRef = useRef(null)
-  const [height, setHeight] = useState(large ? null : widget.height || 120)
   const doc = useMemo(() => buildDoc(widget, accent, large), [widget.html, widget.id, accent, large])
-  useEffect(() => {
-    if (widget.height && !large) return undefined
-    const onMsg = e => {
-      // Only trust our own frame: a widget must not resize its neighbours.
-      if (!frameRef.current || e.source !== frameRef.current.contentWindow) return
-      if (e.data && e.data.bdWidget === widget.id && typeof e.data.height === 'number') {
-        setHeight(Math.max(40, Math.min(e.data.height, 2400)))
-      }
-    }
-    window.addEventListener('message', onMsg)
-    return () => window.removeEventListener('message', onMsg)
-  }, [widget.id, widget.height, large])
+  // A widget cannot report its own height without running a script we inject,
+  // so the frame keeps the height the panel stored and scrolls inside.
   return h('iframe', {
-    ref: frameRef,
     className: 'bd-frame',
     title: widget.title,
     sandbox: 'allow-scripts',
-    scrolling: large ? 'auto' : 'no',
+    scrolling: 'auto',
     srcDoc: doc,
-    // Large view: fill the dialog until the widget reports its height, then shrink to fit.
-    style: { height: large ? height || 'min(70vh, 640px)' : widget.height || height }
+    style: { height: large ? 'min(70vh, 640px)' : widget.height || 180 }
   })
 }
 
@@ -1248,9 +1213,26 @@ function MembersWidget({ bot }) {
       ? h(Empty, null, 'This group has no members.')
       : bot.members.map(m => {
           const n = m.missing || m.remote ? 0 : openTasks(m.id)
+          const open = !m.missing && !m.remote
           return h(
             'div',
-            { className: `bd-row bd-member${m.missing ? ' gone' : ''}`, key: m.id, style: m.color ? { '--bd-member': m.color } : undefined },
+            {
+              className: `bd-row bd-member${m.missing ? ' gone' : ''}${open ? ' bd-link' : ''}`,
+              key: m.id,
+              style: m.color ? { '--bd-member': m.color } : undefined,
+              role: open ? 'link' : undefined,
+              tabIndex: open ? 0 : undefined,
+              title: open ? `Open the @${m.handle || m.id} chat` : undefined,
+              onClick: open ? () => openMemberChat(m.id) : undefined,
+              onKeyDown: open
+                ? e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      openMemberChat(m.id)
+                    }
+                  }
+                : undefined
+            },
             h('span', { className: 'bd-mface' }, h(BotAvatar, { bot: m })),
             h(
               'div',
@@ -1296,74 +1278,220 @@ function ActivityWidget({ bot }) {
   )
 }
 
-// ---------------------------------------------------------------- focus
+// ---------------------------------------------------------------- group pane
 
-// The app's group chat view marks its root with the room's owner key:
-// "group:id:<roomId>", or "group:name:<name>" for a room made before room ids.
-const GROUP_SEL = '[data-preview-annotate-destination="group"][data-preview-annotate-owner-key]'
+// Two panes, one plugin: "Bot" follows the focused bot, "Group" shows the group
+// chat the user picked or opened. Everything here goes through the plugin SDK —
+// the app's own markup is never read or clicked (catalog rule 8).
 
-/** Group chats rendered on screen right now. A room parked in an inactive tab
- *  is `invisible`, `inert` and zero-sized, so it drops out of this list. */
-function shownGroups() {
-  const out = []
-  for (const el of document.querySelectorAll(GROUP_SEL)) {
-    const key = el.getAttribute('data-preview-annotate-owner-key')
-    if (!key || el.closest('[inert]') || el.closest('.invisible')) continue
-    if (getComputedStyle(el).visibility === 'hidden') continue
-    const r = el.getBoundingClientRect()
-    if (r.width < 4 || r.height < 4) continue
-    out.push(key)
+const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase()
+const GROUP_PANE = `${PLUGIN_ID}:group`
+
+const groupStore = (() => {
+  let value = null
+  const subs = new Set()
+  return {
+    get: () => value,
+    set(next) {
+      value = next
+      for (const fn of subs) fn(next)
+    },
+    sub(fn) {
+      subs.add(fn)
+      return () => subs.delete(fn)
+    }
   }
-  return out
+})()
+
+function rememberGroup(next) {
+  groupStore.set(next)
+  try {
+    ctxRef?.storage?.set('group', next)
+  } catch {
+    /* a lost preference is not worth an error */
+  }
 }
 
-/** What the pane follows. A group chat that appears on screen wins; clicking a
- *  bot's chat (or picking a bot in the roster) hands it back to that bot. A
- *  group stays pinned while it is on screen, even as the focused bot changes. */
-function useFocusTarget() {
-  const botId = useBotId()
-  const [group, setGroup] = useState(null)
-  const pin = useRef(null) // the group key in front, or null for the bot
-  const seen = useRef([])
+function useSelectedGroup() {
+  const [value, setValue] = useState(groupStore.get())
+  useEffect(() => groupStore.sub(setValue), [])
+  return value
+}
 
+let groupCache = { at: 0, list: [], error: '' }
+
+/** Group chats this computer can read. Cached briefly; the pane polls it. */
+async function fetchGroups(force) {
+  if (!force && Date.now() - groupCache.at < 15_000) {
+    if (groupCache.error) throw new Error(groupCache.error)
+    return groupCache.list
+  }
+  try {
+    const d = await rest('/groups')
+    const all = Array.isArray(d) ? d : d && Array.isArray(d.groups) ? d.groups : []
+    const list = all.filter(g => g && g.id && g.name && !g.disbanded)
+    groupCache = { at: Date.now(), list, error: '' }
+    return list
+  } catch (err) {
+    const text = errorText(err)
+    groupCache = { at: Date.now(), list: groupCache.list, error: text }
+    throw new Error(text)
+  }
+}
+
+/** Bot id → the profile its backend runs as. */
+function profileFor(id) {
+  const v = String(id || '').trim()
+  return !v || v === 'hermes' ? 'default' : v
+}
+
+/** Open a bot's one forever chat through the public SDK: the registry lookup the
+ *  roster does, then `openSession`. */
+async function openMemberChat(id) {
+  if (!id) return
+  const profile = profileFor(id)
+  try {
+    const res = await host.requestProfile(
+      profile,
+      'session.list',
+      { profile, title: 'Bot Chat', limit: 50, include_hidden: true },
+      45_000,
+      { spawnPriority: 'foreground' }
+    )
+    const row = ((res && res.sessions) || []).find(s => s && s.id)
+    if (!row) {
+      host.notify({ kind: 'info', message: `@${id} has no chat yet. Open it once from the Bots list.` })
+      return
+    }
+    await host.openSession(String(row.resolved_id || row.id), { profile })
+  } catch (err) {
+    host.notify({ kind: 'error', message: `Could not open @${id}: ${errorText(err)}` })
+  }
+}
+
+/** Follow the chat in focus: when its title is a group's name, show that group. */
+function useFollowFocusedChat(onTitle) {
+  const storedId = useValue(host.state.focusedStoredSessionId)
+  const profile = useValue(host.state.focusedSessionProfile)
+  const act = useRef(onTitle)
+  act.current = onTitle
   useEffect(() => {
-    const follow = key => {
-      if (key === pin.current) return
-      pin.current = key
-      setGroup(key)
-    }
-    const sync = () => {
-      const views = shownGroups()
-      const fresh = views.filter(k => !seen.current.includes(k))
-      seen.current = views
-      // A room that just appeared on screen is a deliberate move: follow it,
-      // even when another room is still open beside it. Only then fall back.
-      if (fresh.length) return follow(fresh[fresh.length - 1])
-      if (pin.current && !views.includes(pin.current)) {
-        pin.current = null
-        setGroup(null)
-      }
-    }
-    const onPointer = e => {
-      const t = e.target instanceof Element ? e.target : null
-      if (!t || t.closest('.bd')) return // inside this pane: leave focus alone
-      const view = t.closest(GROUP_SEL)
-      if (view) return follow(view.getAttribute('data-preview-annotate-owner-key'))
-      // A click anywhere in another pane is a move away from the group.
-      if (t.closest('[data-pane-host]')) pin.current = null, setGroup(null)
-    }
-    sync()
-    const timer = setInterval(sync, 700)
-    document.addEventListener('pointerdown', onPointer, true)
-    document.addEventListener('focusin', onPointer, true)
+    if (!storedId) return undefined
+    let alive = true
+    const name = profile || 'default'
+    host
+      .requestProfile(name, 'session.list', { profile: name, limit: 200, include_hidden: true }, 20_000)
+      .then(res => {
+        const row = ((res && res.sessions) || []).find(
+          s => s && (String(s.id) === String(storedId) || String(s.resolved_id) === String(storedId))
+        )
+        if (alive && row && row.title) act.current(String(row.title))
+      })
+      .catch(() => {})
     return () => {
-      clearInterval(timer)
-      document.removeEventListener('pointerdown', onPointer, true)
-      document.removeEventListener('focusin', onPointer, true)
+      alive = false
+    }
+  }, [storedId, profile])
+}
+
+function GroupPicker({ groups, selected, onPick, onRefresh, busy }) {
+  return h(
+    'div',
+    { className: 'bd-pick' },
+    h(
+      'select',
+      {
+        className: 'bd-select desktop-input-chrome',
+        value: selected ? String(selected.id) : '',
+        onChange: e => {
+          const hit = groups.find(g => String(g.id) === e.target.value)
+          if (hit) onPick({ id: hit.id, name: hit.name })
+        },
+        'aria-label': 'Group chat'
+      },
+      selected ? null : h('option', { value: '' }, groups.length ? 'Pick a group' : 'No group chats yet'),
+      ...groups.map(g => h('option', { key: g.id, value: String(g.id) }, g.name))
+    ),
+    h(
+      'button',
+      {
+        type: 'button',
+        className: 'bd-btn bd-refresh',
+        onClick: onRefresh,
+        disabled: busy,
+        title: 'Read the group list again',
+        'aria-label': 'Refresh groups'
+      },
+      busy ? '…' : '⟳'
+    )
+  )
+}
+
+function GroupPane() {
+  const selected = useSelectedGroup()
+  const [groups, setGroups] = useState(groupCache.list)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(async force => {
+    setBusy(true)
+    try {
+      const list = await fetchGroups(force)
+      setGroups(list)
+      setError('')
+      if (!groupStore.get() && list.length) rememberGroup({ id: list[0].id, name: list[0].name })
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(false)
     }
   }, [])
 
-  return group ? { kind: 'group', key: group } : { kind: 'bot', key: botId }
+  useEffect(() => {
+    load()
+    const timer = setInterval(() => load(), 15_000)
+    return () => clearInterval(timer)
+  }, [load])
+
+  // A group chat opened anywhere in the app raises this pane and shows it here.
+  useFollowFocusedChat(
+    useCallback(title => {
+      const hit = groupCache.list.find(g => norm(g.name) === norm(title))
+      if (!hit || groupStore.get()?.id === hit.id) return
+      rememberGroup({ id: hit.id, name: hit.name })
+      if (typeof host.revealPane === 'function') host.revealPane(GROUP_PANE)
+    }, [])
+  )
+
+  const head = h(GroupPicker, { groups, selected, onPick: rememberGroup, onRefresh: () => load(true), busy })
+
+  if (!selected) {
+    return h(
+      'div',
+      { className: 'bd-groups' },
+      head,
+      h(
+        'div',
+        { className: 'bd bd-group-empty' },
+        h(
+          'p',
+          null,
+          groups.length
+            ? 'Pick a group chat to see its dashboard.'
+            : error
+              ? `The group list could not be read. ${error}`
+              : 'No group chats yet. Make one from the Bots list.'
+        )
+      )
+    )
+  }
+
+  return h(
+    'div',
+    { className: 'bd-groups', 'data-group': selected.id },
+    head,
+    h(Dashboard, { target: { kind: 'group', key: `group:id:${selected.id}` } })
+  )
 }
 
 // ---------------------------------------------------------------- pane
@@ -1432,17 +1560,6 @@ function Dashboard({ target }) {
   const [customizing, setCustomizing] = useState(false)
   useEffect(() => setCustomizing(false), [botId, kind])
 
-  // Build stamp: proves which copy of the plugin the app actually loaded, and
-  // whether the host serves the group routes and the DOM exposes group chats.
-  const [rooms, setRooms] = useState(null)
-  useEffect(() => {
-    let off = false
-    rest('/groups')
-      .then(d => { if (!off) setRooms(Array.isArray(d) ? d.length : (d && Array.isArray(d.groups) ? d.groups.length : -1)) })
-      .catch(e => { if (!off) setRooms('err ' + ((e && e.message) || e)) })
-    return () => { off = true }
-  }, [])
-
   const accent = group ? bot?.members?.find(m => m.color)?.color : bot?.color
   const style = useMemo(() => (accent ? { '--bd-accent': accent } : undefined), [accent])
 
@@ -1455,7 +1572,7 @@ function Dashboard({ target }) {
       : bot.reason === 'invalid'
         ? 'Open a bot from the Bots list to see its dashboard.'
         : 'The bot was deleted or renamed. Open a bot from the Bots list to see its dashboard.'
-    return h('div', { className: `bd${group ? ' bd-group' : ''}`, 'data-bot': botId, 'data-version': '0.4.3' },
+    return h('div', { className: `bd${group ? ' bd-group' : ''}`, 'data-bot': botId, 'data-version': '0.6.1' },
       h('div', { className: 'bd-card bd-missing' },
         h('div', { className: 'bd-missing-title' }, title),
         h('p', null, body),
@@ -1497,22 +1614,18 @@ function Dashboard({ target }) {
 
   return h(
     'div',
-    { className: `bd${group ? ' bd-group' : ''}`, style, 'data-bot': bot.id, 'data-kind': group ? 'group' : 'bot', 'data-version': '0.4.3' },
+    { className: `bd${group ? ' bd-group' : ''}`, style, 'data-bot': bot.id, 'data-kind': group ? 'group' : 'bot', 'data-version': '0.6.1' },
     ...visible.slice(0, heroAt + 1).map(cardFor),
     customizing ? h(CardBoundary, { key: 'customize', label: 'editor', resetKey: bot.id }, h(CustomizePanel, { bot, onChanged: load, onClose: () => setCustomizing(false) })) : null,
     error ? h('div', { className: 'bd-error', key: 'err' }, `Showing the last loaded data. ${error}`) : null,
     ...visible.slice(heroAt + 1).map(cardFor),
     bot.brain ? null : h('div', { className: 'bd-error', key: 'brain' }, 'HermesBrain was not found, so tasks and projects are empty.'),
-    h('div', { className: 'bd-foot', key: 'foot' },
-      group ? `Following this group chat · ${bot.name}` : `Following @${bot.id}`,
-      h('span', { className: 'bd-diag' },
-        `  ·  v0.4.5 · rooms ${rooms === null ? '…' : rooms} · in view ${typeof shownGroups === 'function' ? shownGroups().length : '?'}`))
+    h('div', { className: 'bd-foot', key: 'foot' }, group ? `Group chat · ${bot.name}` : `Following @${bot.id}`)
   )
 }
 
 function BotDashboard() {
-  const target = useFocusTarget()
-  return h(Dashboard, { target })
+  return h(Dashboard, { target: { kind: 'bot', key: useBotId() } })
 }
 
 function Pane() {
@@ -1520,13 +1633,24 @@ function Pane() {
   return h(BotDashboard)
 }
 
+function GroupTab() {
+  useEffect(ensureStyle, [])
+  return h(GroupPane)
+}
+
 export default {
   id: PLUGIN_ID,
-  name: 'Bot Dashboard',
+  name: 'Bot & Group Dashboards',
   defaultEnabled: true,
   register(ctx) {
     ctxRef = ctx
     ensureStyle()
+    try {
+      const saved = ctx.storage?.get('group', null)
+      if (saved && saved.id) groupStore.set(saved)
+    } catch {
+      /* first run */
+    }
     ctx.register({
       id: 'pane',
       area: 'panes',
@@ -1538,6 +1662,18 @@ export default {
         width: '320px'
       },
       render: () => h(Pane)
+    })
+    ctx.register({
+      id: 'groups',
+      area: 'panes',
+      title: 'Group',
+      data: {
+        tabTitleText: () => 'Group',
+        placement: 'main',
+        dock: { pane: 'hermes-bots:routines', pos: 'center' },
+        width: '320px'
+      },
+      render: () => h(GroupTab)
     })
     ctx.onDispose?.(() => document.getElementById(STYLE_ID)?.remove())
   }

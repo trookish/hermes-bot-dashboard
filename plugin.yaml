@@ -1,11 +1,19 @@
 name: bot-dashboard
-version: 0.4.5
-description: Side panel that shows the dashboard of the bot or group chat in focus - profile, members, activity, scheduled jobs, tasks and projects.
+version: 1.0.0
+description: >-
+  Two desktop panes in one plugin. "Bot" shows the focused bot's dashboard — profile,
+  scheduled jobs, tasks, notes, projects and its custom widgets. "Group" shows the
+  dashboard of a group chat: members, activity, shared tasks and projects.
 manifest_version: 1
 requires_hermes: ">=0.20.0"
 author: Turki Alshaalan
 license: MIT
-capabilities: []
+homepage: https://github.com/trookish/hermes-bot-dashboard
+category: desktop
 kind: standalone
+provides_tools: [bot_panel]
+provides_hooks: [pre_llm_call]
+provides_middleware: []
+capabilities: []
 requires_env: []
 python_dependencies: []
