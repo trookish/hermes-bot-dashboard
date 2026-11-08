@@ -1,6 +1,6 @@
 name: bot-dashboard
 repo: https://github.com/trookish/hermes-bot-dashboard
-sha: 6d2d53911a67956496ab7d5bb39972a94035601b
+sha: 2ec549ccc73e82ef99f111f450b6a39d6e4ddd9c
 title: Bot Dashboard
 description: >-
   Two desktop panes in one plugin. Bot shows the focused bot's dashboard - profile and
@@ -12,7 +12,7 @@ description: >-
 maintainer: trookish
 tier: community
 category: desktop
-version: "1.1.0"
+version: "1.1.1"
 docs_url: https://github.com/trookish/hermes-bot-dashboard#readme
 platforms: []
 capabilities:
