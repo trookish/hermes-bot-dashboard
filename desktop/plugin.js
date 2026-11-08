@@ -1427,6 +1427,17 @@ function GroupPicker({ groups, selected, onPick, onRefresh, busy }) {
   )
 }
 
+/** A group chat's session is titled `Group: <roomId>`; older ones use the name. */
+function groupForTitle(title) {
+  const t = String(title || '').trim()
+  const id = t.replace(/^group\s*:\s*/i, '').trim()
+  return (
+    groupCache.list.find(g => String(g.id) === id) ||
+    groupCache.list.find(g => norm(g.name) === norm(t)) ||
+    null
+  )
+}
+
 function GroupPane() {
   const selected = useSelectedGroup()
   const [groups, setGroups] = useState(groupCache.list)
@@ -1456,7 +1467,7 @@ function GroupPane() {
   // A group chat opened anywhere in the app raises this pane and shows it here.
   useFollowFocusedChat(
     useCallback(title => {
-      const hit = groupCache.list.find(g => norm(g.name) === norm(title))
+      const hit = groupForTitle(title)
       if (!hit || groupStore.get()?.id === hit.id) return
       rememberGroup({ id: hit.id, name: hit.name })
       if (typeof host.revealPane === 'function') host.revealPane(GROUP_PANE)

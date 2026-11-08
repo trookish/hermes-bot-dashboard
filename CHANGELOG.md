@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1
+
+- The Group pane now follows a group chat by its room id — Hermes titles those
+  sessions `Group: <roomId>` — as well as by name on older rooms.
+
 ## 1.1.0
 
 - **Tool calling for both dashboards.** `bot_panel` covers the bot's own pane,

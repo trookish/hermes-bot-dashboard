@@ -3,6 +3,6 @@
   "label": "Bot Dashboard",
   "description": "Profile, members, jobs, tasks and projects for the bot or group chat you are looking at",
   "icon": "LayoutDashboard",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "api": "plugin_api.py"
 }

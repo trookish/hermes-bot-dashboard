@@ -1,5 +1,5 @@
 name: bot-dashboard
-version: 1.1.0
+version: 1.1.1
 description: >-
   Two desktop panes in one plugin. "Bot" shows the focused bot's dashboard — profile,
   scheduled jobs, tasks, notes, projects and its custom widgets. "Group" shows the
