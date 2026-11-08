@@ -84,12 +84,32 @@ def _owned(fields: dict, bot: str) -> bool:
     return bot in [str(o).strip() for o in owners if o]
 
 
-def _avatar(home: Path) -> Optional[str]:
+def _avatar(home: Path) -> tuple[Optional[str], bool]:
+    """(data URL, is_backfill). The roster writes a 160x160 PNG snapshot of the
+    drawn face as a backfill and ignores it when rendering; flag it so the pane does too."""
     for name, mime in (("avatar.svg", "image/svg+xml"), ("avatar.png", "image/png")):
         path = home / "assets" / name
         if path.is_file() and path.stat().st_size < 2_000_000:
-            return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
-    return None
+            raw = path.read_bytes()
+            backfill = mime == "image/png" and len(raw) >= 24 and raw[16:24] == b"\x00\x00\x00\xa0\x00\x00\x00\xa0"
+            return f"data:{mime};base64," + base64.b64encode(raw).decode(), backfill
+    return None, False
+
+
+def _soul(home: Path) -> str:
+    try:
+        return (home / "SOUL.md").read_text(encoding="utf-8")[:6000]
+    except OSError:
+        return ""
+
+
+def _skills(home: Path, config: dict) -> tuple[int, int]:
+    """(installed, enabled) for this profile's own skills directory."""
+    skills_dir = home / "skills"
+    names = {p.parent.name for p in skills_dir.rglob("SKILL.md")} if skills_dir.is_dir() else set()
+    cfg = config.get("skills") if isinstance(config.get("skills"), dict) else {}
+    disabled = {str(s) for s in (cfg.get("disabled") or []) if s}
+    return len(names), len(names - disabled)
 
 
 def _tasks(bot: str) -> list[dict]:
@@ -152,19 +172,33 @@ def bot_summary(id: str = Query("", max_length=64)) -> dict:
     fallbacks = config.get("fallback_providers") if isinstance(config.get("fallback_providers"), list) else []
     terminal = config.get("terminal") if isinstance(config.get("terminal"), dict) else {}
     plugins = (config.get("plugins") or {}).get("enabled") if isinstance(config.get("plugins"), dict) else []
-    skills_dir = home / "skills"
-    skill_count = sum(1 for _ in skills_dir.rglob("SKILL.md")) if skills_dir.is_dir() else 0
+    skill_count, skills_on = _skills(home, config)
+    agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    toolsets = (config.get("platform_toolsets") or {}).get("cli") if isinstance(config.get("platform_toolsets"), dict) else None
+    mcp = config.get("mcp_servers") if isinstance(config.get("mcp_servers"), dict) else {}
+    avatar, backfill = _avatar(home)
+    cwd = str(terminal.get("cwd") or "").strip()
     return {
         "id": bot,
-        "name": str(meta.get("name") or profile.get("display_name") or profile.get("name") or bot),
+        "name": str(meta.get("title") or meta.get("name") or profile.get("display_name") or profile.get("name") or bot),
         "description": str(meta.get("description") or profile.get("description") or ""),
         "section": str(meta.get("sectionName") or ""),
         "color": str(meta.get("color") or ""),
-        "avatar": _avatar(home),
+        "shape": str(meta.get("shape") or ""),
+        "imageKind": str(meta.get("imageKind") or ""),
+        "custom": bool(meta.get("custom")),
+        "avatar": avatar,
+        "avatarBackfill": backfill,
+        "reasoning": str(agent.get("reasoning_effort") or ""),
+        "maxTurns": agent.get("max_turns") if isinstance(agent.get("max_turns"), int) else None,
+        "toolsets": [str(t) for t in toolsets][:60] if isinstance(toolsets, list) else [],
+        "mcp": [{"name": str(k), "enabled": bool((v or {}).get("enabled", True)) if isinstance(v, dict) else True} for k, v in list(mcp.items())[:30]],
+        "skillsEnabled": skills_on,
+        "soul": _soul(home),
         "model": str(model.get("default") or ""),
         "provider": str(model.get("provider") or ""),
         "fallback": [f"{f.get('provider', '')}/{f.get('model', '')}" for f in fallbacks if isinstance(f, dict)],
-        "workspace": str(terminal.get("cwd") or ""),
+        "workspace": "" if cwd in ("", ".", "./") else cwd,
         "plugins": [str(p) for p in (plugins or [])][:40],
         "skillCount": skill_count,
         "tasks": _tasks(bot),

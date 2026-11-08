@@ -1,6 +1,7 @@
 // Bot Dashboard: Hermes Desktop pane (disk plugin, loaded uncompiled).
 // Shows the focused chat's bot: profile, scheduled jobs, TaskNotes and projects.
 // Only @hermes/plugin-sdk and react may be imported here.
+import * as sdk from '@hermes/plugin-sdk'
 import { host, useValue } from '@hermes/plugin-sdk'
 import React from 'react'
 
@@ -16,13 +17,21 @@ let ctxRef = null
 // ---------------------------------------------------------------- styles
 
 const CSS = `
-.bd{--bd-accent:var(--ui-accent);height:100%;overflow:auto;padding:12px 12px 20px;display:flex;flex-direction:column;gap:12px;
+.bd{--bd-accent:var(--ui-accent);height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;
+  scrollbar-gutter:stable;padding:12px 10px 20px 12px;display:flex;flex-direction:column;gap:10px;
   color:var(--ui-text-primary);font-size:13px;line-height:1.45;background:var(--ui-bg-sidebar,transparent)}
+.bd>*{flex:0 0 auto}
+.bd::-webkit-scrollbar{width:8px}
+.bd::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--ui-text-tertiary) 35%,transparent);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+.bd::-webkit-scrollbar-thumb:hover{background-color:color-mix(in srgb,var(--ui-text-tertiary) 60%,transparent)}
+.bd::-webkit-scrollbar-track{background:transparent}
 .bd *{box-sizing:border-box}
 .bd-hero{position:relative;border:1px solid var(--ui-stroke-secondary);border-radius:12px;padding:14px;overflow:hidden;
   background:linear-gradient(160deg,color-mix(in srgb,var(--bd-accent) 16%,transparent),transparent 70%),var(--ui-bg-card,var(--ui-bg-elevated))}
 .bd-hero-top{display:flex;gap:12px;align-items:center}
-.bd-avatar{width:52px;height:52px;border-radius:14px;flex:none;object-fit:cover;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+.bd-avatar{width:52px;height:52px;border-radius:22%;flex:none;object-fit:cover;display:block}
+.bd-avatar-blob{width:52px;height:52px;flex:none;line-height:0}
+.bd-avatar-blob svg{width:100%;height:100%;display:block}
 .bd-avatar-fallback{display:grid;place-items:center;font-weight:700;font-size:20px;color:#fff;background:var(--bd-accent)}
 .bd-name{font-size:16px;font-weight:650;letter-spacing:-.01em;margin:0}
 .bd-section{display:inline-flex;align-items:center;gap:6px;margin-top:3px;font-size:11px;font-weight:600;text-transform:uppercase;
@@ -31,15 +40,30 @@ const CSS = `
 .bd-desc{margin:10px 0 0;color:var(--ui-text-secondary)}
 .bd-facts{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin-top:12px;font-size:12px}
 .bd-facts dt{color:var(--ui-text-tertiary)}
-.bd-facts dd{margin:0;color:var(--ui-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono,ui-monospace,monospace);font-size:11.5px}
-.bd-iconbtn{position:absolute;top:10px;right:10px;border:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-elevated);
+.bd-facts dt{white-space:nowrap}
+.bd-facts dd{margin:0;min-width:0;color:var(--ui-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono,ui-monospace,monospace);font-size:11.5px}
+.bd-facts dd.plain{font-family:inherit;font-size:12px}
+.bd-soul{margin-top:10px;border-top:1px solid var(--ui-stroke-tertiary,var(--ui-stroke-secondary));padding-top:8px}
+.bd-soul summary{cursor:pointer;font-size:11px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--ui-text-secondary);list-style:none;display:flex;align-items:center;gap:6px}
+.bd-soul summary::-webkit-details-marker{display:none}
+.bd-soul summary::before{content:'›';display:inline-block;transition:transform .15s;color:var(--ui-text-tertiary)}
+.bd-soul[open] summary::before{transform:rotate(90deg)}
+.bd-soul-body{margin-top:6px;display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ui-text-secondary)}
+.bd-soul-body b{color:var(--ui-text-primary);font-weight:600}
+.bd-soul-pre{margin:4px 0 0;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;
+  line-height:1.45;padding:8px;border-radius:8px;border:1px solid var(--ui-stroke-tertiary,var(--ui-stroke-secondary));color:var(--ui-text-secondary)}
+.bd-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.bd-chip{font-size:11px;padding:0 7px;border-radius:999px;border:1px solid var(--ui-stroke-secondary);color:var(--ui-text-secondary);white-space:nowrap}
+.bd-iconbtn{position:absolute;top:10px;right:10px;border:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-sidebar,transparent);
   color:var(--ui-text-secondary);border-radius:8px;width:28px;height:28px;display:grid;place-items:center;cursor:pointer}
 .bd-iconbtn:hover{color:var(--ui-text-primary);border-color:var(--bd-accent)}
-.bd-iconbtn:focus-visible,.bd button:focus-visible,.bd input:focus-visible{outline:2px solid var(--bd-accent);outline-offset:1px}
+.bd-iconbtn:focus-visible,.bd button:focus-visible,.bd-card-head:focus-visible,.bd-check:focus-visible{outline:2px solid var(--bd-accent);outline-offset:1px}
+.bd-input:not(.desktop-input-chrome):focus{border-color:var(--bd-accent)}
 .bd-spin{animation:bd-spin .8s linear infinite}
 @keyframes bd-spin{to{transform:rotate(360deg)}}
-.bd-card{border:1px solid var(--ui-stroke-secondary);border-radius:12px;background:var(--ui-bg-card,var(--ui-bg-elevated));overflow:hidden}
-.bd-card-head{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;user-select:none;border:0;width:100%;
+.bd-card{border:1px solid var(--ui-stroke-secondary);border-radius:12px;background:var(--ui-bg-card,var(--ui-bg-elevated));position:relative}
+.bd-card:focus-within,.bd-card:hover{z-index:2}
+.bd-card-head{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;user-select:none;border:0;width:100%;border-radius:11px;
   background:transparent;color:inherit;font:inherit;text-align:left}
 .bd-card-head:hover{background:var(--ui-row-hover-background)}
 .bd-card-title{font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--ui-text-secondary)}
@@ -49,7 +73,7 @@ const CSS = `
 .bd-info{position:relative;display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;font-size:10px;font-weight:700;
   color:var(--ui-text-tertiary);border:1px solid var(--ui-stroke-secondary);cursor:help;text-transform:none;letter-spacing:0}
 .bd-info:hover{color:var(--ui-text-primary);border-color:var(--bd-accent)}
-.bd-tip{display:none;position:absolute;left:-8px;top:22px;z-index:20;width:230px;padding:8px 10px;border-radius:8px;font-size:12px;font-weight:400;
+.bd-tip{display:none;position:absolute;left:50%;transform:translateX(-50%);top:22px;z-index:20;width:min(230px,calc(100vw - 24px));padding:8px 10px;border-radius:8px;font-size:12px;font-weight:400;
   line-height:1.4;color:var(--ui-text-primary);background:var(--ui-bg-elevated);border:1px solid var(--ui-stroke-primary);box-shadow:0 6px 24px rgba(0,0,0,.3)}
 .bd-info:hover .bd-tip,.bd-info:focus .bd-tip{display:block}
 .bd-body{padding:2px 12px 12px;display:flex;flex-direction:column;gap:6px}
@@ -66,19 +90,26 @@ const CSS = `
 .bd-pill.warn{color:var(--ui-yellow);border-color:color-mix(in srgb,var(--ui-yellow) 45%,transparent)}
 .bd-pill.bad{color:var(--ui-red);border-color:color-mix(in srgb,var(--ui-red) 45%,transparent)}
 .bd-pill.muted{color:var(--ui-text-tertiary)}
-.bd-btn{border:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-elevated);color:var(--ui-text-primary);border-radius:7px;
-  padding:3px 9px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
-.bd-btn:hover{border-color:var(--bd-accent)}
+.bd-btn{border:1px solid var(--ui-stroke-secondary);background:transparent;color:var(--ui-text-primary);border-radius:7px;
+  padding:4px 10px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:border-color .15s,background .15s}
+.bd-btn:hover:not(:disabled){border-color:var(--bd-accent);background:var(--ui-row-hover-background)}
 .bd-btn:disabled{opacity:.5;cursor:default}
 .bd-btn.primary{background:var(--bd-accent);border-color:var(--bd-accent);color:#fff}
+.bd-btn.primary:hover:not(:disabled){filter:brightness(1.08);background:var(--bd-accent)}
 .bd-check{appearance:none;flex:none;width:18px;height:18px;margin-top:1px;border-radius:5px;border:1.5px solid var(--ui-text-tertiary);cursor:pointer;
   display:grid;place-items:center;background:transparent}
 .bd-check:checked{background:var(--bd-accent);border-color:var(--bd-accent)}
 .bd-check:checked::after{content:'';width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
-.bd-add{display:flex;gap:6px;margin-top:4px}
-.bd-input{flex:1;min-width:0;border:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-input,var(--ui-bg-secondary));color:var(--ui-text-primary);
-  border-radius:7px;padding:5px 8px;font:inherit;font-size:12.5px}
-.bd-input.date{flex:none;width:122px;color-scheme:light dark}
+.bd-add{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.bd-add>.bd-input:first-child{flex:1 1 100%}
+.bd-add>.bd-input.date{flex:1 1 auto;width:auto;min-width:0}
+.bd-input{flex:1;min-width:0;border-width:1px;border-style:solid;color:var(--ui-text-primary);
+  border-radius:7px;padding:5px 8px;font:inherit;font-size:12.5px;outline:none}
+.bd-input::placeholder{color:var(--ui-text-tertiary)}
+.bd-input:not(.desktop-input-chrome){background:transparent;border-color:var(--ui-stroke-secondary)}
+.bd-input.date{flex:none;width:126px}
+.bd-input.date::-webkit-calendar-picker-indicator{filter:var(--bd-picker-filter,none);opacity:.7;cursor:pointer}
+.bd select.bd-input option{background:var(--ui-bg-elevated);color:var(--ui-text-primary)}
 .bd-empty{padding:12px;text-align:center;color:var(--ui-text-tertiary);font-size:12.5px;border:1px dashed var(--ui-stroke-secondary);border-radius:9px}
 .bd-link{background:none;border:0;padding:0;color:var(--ui-text-secondary);font:inherit;font-size:12px;cursor:pointer;text-decoration:underline;align-self:flex-start}
 .bd-link:hover{color:var(--ui-text-primary)}
@@ -105,21 +136,28 @@ const CSS = `
 .bd-mini.danger:hover:not(:disabled){color:var(--ui-red);border-color:color-mix(in srgb,var(--ui-red) 45%,transparent)}
 .bd-mini:disabled{opacity:.4;cursor:default}
 .bd-frame{display:block;width:100%;border:0;background:transparent;border-radius:8px}
+.bd-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:32px;background:color-mix(in srgb,#000 55%,transparent)}
+.bd-overlay-box{width:min(960px,100%);max-height:100%;display:flex;flex-direction:column;border:1px solid var(--ui-stroke-secondary);border-radius:14px;
+  background:var(--ui-bg-elevated);color:var(--ui-text-primary);box-shadow:0 20px 60px rgba(0,0,0,.45);overflow:hidden}
+.bd-overlay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--ui-stroke-secondary)}
+.bd-overlay-body{padding:14px;overflow:auto;min-height:0}
 .bd-editor{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;border:1.5px solid var(--bd-accent);
   background:color-mix(in srgb,var(--bd-accent) 6%,var(--ui-bg-card,var(--ui-bg-elevated)))}
 .bd-editor-title{display:flex;align-items:center;gap:8px;font-weight:650}
-.bd-layout-row{display:flex;align-items:center;gap:2px;padding:5px 8px;border-radius:8px;border:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-elevated)}
+.bd-layout-row{display:flex;align-items:center;gap:2px;padding:5px 8px;border-radius:8px;border:1px solid var(--ui-stroke-secondary);background:transparent}
 .bd-layout-row.off .bd-layout-name{color:var(--ui-text-tertiary);text-decoration:line-through}
 .bd-layout-name{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bd-hint{font-size:11.5px;color:var(--ui-text-tertiary)}
 `
 
 function ensureStyle() {
-  if (document.getElementById(STYLE_ID)) return
-  const el = document.createElement('style')
-  el.id = STYLE_ID
-  el.textContent = CSS
-  document.head.appendChild(el)
+  let el = document.getElementById(STYLE_ID)
+  if (!el) {
+    el = document.createElement('style')
+    el.id = STYLE_ID
+    document.head.appendChild(el)
+  }
+  if (el.textContent !== CSS) el.textContent = CSS
 }
 
 // ---------------------------------------------------------------- helpers
@@ -258,10 +296,73 @@ function Empty({ children }) {
   return h('div', { className: 'bd-empty' }, children)
 }
 
+// ---------------------------------------------------------------- avatar
+
+// Mirrors hermes-bots/avatar.tsx so the face here matches the roster row.
+const blobatarSvg = typeof sdk.blobatarSvg === 'function' ? sdk.blobatarSvg : null
+const BLOB_KIND_TRAIT = { round: 0.11, organic: 0.35, boxy: 0.54, capsule: 0.65, nub: 0.745, cloud: 0.825, droplet: 0.8875, hexagon: 0.9325, sun: 0.965, triangle: 0.99 }
+const AVATAR_SIZE = 52
+
+function blobFace(shape, name) {
+  if (!blobatarSvg) return null
+  const parts = String(shape || '').split(':')
+  const seed = parts[1] || name || 'agent'
+  const kind = BLOB_KIND_TRAIT[parts[2]] !== undefined ? parts[2] : ''
+  try {
+    return blobatarSvg(seed, kind ? { size: AVATAR_SIZE, traits: { shape: BLOB_KIND_TRAIT[kind] } } : { size: AVATAR_SIZE })
+  } catch {
+    return null
+  }
+}
+
+// Non-blob faces (squircle, platonic solids, sigils) are drawn by the roster
+// itself; copy its rendered SVG so both always look the same.
+function rosterFace(id) {
+  try {
+    const sel = `svg[data-bot-face="${CSS.escape(id)}"]`
+    const svg = document.querySelector(`[data-slot="profile-rail"] ${sel}`) || document.querySelector(sel)
+    if (!svg) return null
+    const copy = svg.cloneNode(true)
+    copy.removeAttribute('width')
+    copy.removeAttribute('height')
+    copy.setAttribute('data-bot-face', `bd-${id}`)
+    return copy.outerHTML
+  } catch {
+    return null
+  }
+}
+
+function BotAvatar({ bot }) {
+  const photo = bot.avatar && !bot.avatarBackfill && bot.imageKind !== 'shape' ? bot.avatar : null
+  const shape = bot.shape || ''
+  const isBlob = shape === 'blobatar' || shape.startsWith('blobatar:')
+  const faceName = bot.id === 'hermes' ? 'default' : bot.id
+  const blob = useMemo(() => (photo || !isBlob ? null : blobFace(shape, bot.id)), [photo, isBlob, shape, bot.id])
+  const [copied, setCopied] = useState(null)
+
+  useEffect(() => {
+    setCopied(null)
+    if (photo || blob) return
+    let tries = 0
+    const grab = () => {
+      const markup = rosterFace(faceName)
+      if (markup) setCopied(markup)
+      else if (++tries < 10) t = setTimeout(grab, 400)
+    }
+    let t = setTimeout(grab, 0)
+    return () => clearTimeout(t)
+  }, [photo, blob, faceName, bot.shape, bot.color])
+
+  if (photo) return h('img', { className: 'bd-avatar', src: photo, alt: '' })
+  const markup = blob || copied
+  if (markup) return h('span', { className: 'bd-avatar-blob', 'aria-hidden': true, dangerouslySetInnerHTML: { __html: markup } })
+  if (bot.avatar) return h('img', { className: 'bd-avatar', src: bot.avatar, alt: '' })
+  return h('div', { className: 'bd-avatar bd-avatar-fallback' }, (bot.name || bot.id || '?').trim().slice(0, 1).toUpperCase())
+}
+
 // ---------------------------------------------------------------- widgets
 
 function Hero({ bot, loading, onRefresh, onCustomize, customizing }) {
-  const initials = (bot.name || bot.id || '?').trim().slice(0, 1).toUpperCase()
   return h(
     'header',
     { className: 'bd-hero' },
@@ -292,9 +393,7 @@ function Hero({ bot, loading, onRefresh, onCustomize, customizing }) {
     h(
       'div',
       { className: 'bd-hero-top' },
-      bot.avatar
-        ? h('img', { className: 'bd-avatar', src: bot.avatar, alt: '' })
-        : h('div', { className: 'bd-avatar bd-avatar-fallback' }, initials),
+      h(BotAvatar, { bot }),
       h(
         'div',
         { style: { minWidth: 0, paddingRight: 70 } },
@@ -312,10 +411,38 @@ function Hero({ bot, loading, onRefresh, onCustomize, customizing }) {
       h('dd', { title: `${bot.provider}/${bot.model}` }, bot.model || 'Default'),
       bot.fallback?.length ? h('dt', null, 'Fallback') : null,
       bot.fallback?.length ? h('dd', { title: bot.fallback.join(', ') }, bot.fallback.join(', ')) : null,
+      bot.reasoning ? h('dt', null, 'Reasoning') : null,
+      bot.reasoning ? h('dd', { className: 'plain' }, bot.reasoning) : null,
       h('dt', null, 'Skills'),
-      h('dd', null, `${bot.skillCount} installed`),
+      h('dd', { className: 'plain', title: `${bot.skillCount} installed in this profile` },
+        bot.skillsEnabled === undefined || bot.skillsEnabled === bot.skillCount ? `${bot.skillCount} installed` : `${bot.skillsEnabled} on · ${bot.skillCount} installed`),
       bot.workspace ? h('dt', null, 'Workspace') : null,
       bot.workspace ? h('dd', { title: bot.workspace }, bot.workspace) : null
+    ),
+    h(AdvancedFacts, { bot })
+  )
+}
+
+function AdvancedFacts({ bot }) {
+  const toolsets = bot.toolsets || []
+  const mcp = bot.mcp || []
+  const plugins = bot.plugins || []
+  const soul = (bot.soul || '').trim()
+  if (!toolsets.length && !mcp.length && !plugins.length && !soul && !bot.maxTurns) return null
+  const chips = list => h('div', { className: 'bd-chips' }, list.map(x => h('span', { className: 'bd-chip', key: x.name || x, title: x.enabled === false ? 'Disabled' : undefined, style: x.enabled === false ? { opacity: 0.5, textDecoration: 'line-through' } : undefined }, x.name || x)))
+  return h(
+    'details',
+    { className: 'bd-soul' },
+    h('summary', { title: 'The same settings as Edit bot → Advanced: model, skills, toolsets, SOUL.md' }, 'Advanced'),
+    h(
+      'div',
+      { className: 'bd-soul-body' },
+      bot.provider ? h('div', null, h('b', null, 'Provider: '), bot.provider) : null,
+      bot.maxTurns ? h('div', null, h('b', null, 'Max turns: '), String(bot.maxTurns)) : null,
+      toolsets.length ? h('div', null, h('b', null, `Toolsets (${toolsets.length})`), chips(toolsets)) : null,
+      mcp.length ? h('div', null, h('b', null, `MCP servers (${mcp.length})`), chips(mcp)) : null,
+      plugins.length ? h('div', null, h('b', null, `Plugins (${plugins.length})`), chips(plugins)) : null,
+      soul ? h('div', null, h('b', null, 'SOUL.md'), h('pre', { className: 'bd-soul-pre' }, soul)) : null
     )
   )
 }
@@ -529,7 +656,7 @@ function TasksWidget({ bot, onChanged }) {
       'form',
       { className: 'bd-add', onSubmit: add },
       h('input', {
-        className: 'bd-input',
+        className: 'desktop-input-chrome bd-input',
         placeholder: 'Add a task for this bot',
         'aria-label': 'New task title',
         value: title,
@@ -537,7 +664,7 @@ function TasksWidget({ bot, onChanged }) {
         onChange: e => setTitle(e.target.value)
       }),
       h('input', {
-        className: 'bd-input date',
+        className: 'desktop-input-chrome bd-input date',
         type: 'date',
         'aria-label': 'Due date (optional)',
         title: 'Due date (optional)',
@@ -645,7 +772,7 @@ function NotesWidget({ bot, onChanged }) {
       'form',
       { className: 'bd-note-add', onSubmit: add },
       h('textarea', {
-        className: 'bd-input bd-textarea',
+        className: 'desktop-input-chrome bd-input bd-textarea',
         placeholder: 'Write a note for this bot',
         'aria-label': 'New note',
         rows: 2,
@@ -684,7 +811,7 @@ function NotesWidget({ bot, onChanged }) {
               ? h(
                   'div',
                   null,
-                  h('textarea', { className: 'bd-input bd-textarea', rows: 4, value: draft, maxLength: 4000, 'aria-label': 'Edit note',
+                  h('textarea', { className: 'desktop-input-chrome bd-input bd-textarea', rows: 4, value: draft, maxLength: 4000, 'aria-label': 'Edit note',
                     onChange: e => setDraft(e.target.value) }),
                   h('div', { style: { display: 'flex', gap: 6, marginTop: 6, justifyContent: 'flex-end' } },
                     h('button', { type: 'button', className: 'bd-btn', onClick: () => setEditing(null) }, 'Cancel'),
@@ -716,16 +843,16 @@ function themeCss(accent) {
     const v = k === '--accent' && accent ? accent : cs.getPropertyValue(src).trim()
     return v ? `${k}:${v};` : ''
   }).join('')
-  return `:root{${vars}color-scheme:light dark}html,body{margin:0;padding:0;background:transparent;color:var(--foreground);font-family:${body.fontFamily};font-size:13px}`
+  return `:root{${vars}color-scheme:light dark}html,body{margin:0;padding:0;background:transparent;color:var(--foreground);font-family:${body.fontFamily};font-size:13px}html.bd-fit{overflow:hidden}`
 }
 
 // Reports height to the parent and scales content wider than the frame down to fit.
-const FIT_SCRIPT = `<script>(function(){var id=%ID%;function fit(){var b=document.body;if(!b)return;b.style.zoom='';var w=document.documentElement.clientWidth,s=Math.max(b.scrollWidth,document.documentElement.scrollWidth);var z=s>w+2?w/s:1;if(z<1)b.style.zoom=z;var hgt=Math.ceil(document.documentElement.scrollHeight);parent.postMessage({bdWidget:id,height:hgt},'*')}window.addEventListener('load',fit);window.addEventListener('resize',fit);new MutationObserver(function(){requestAnimationFrame(fit)}).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});setTimeout(fit,50);setTimeout(fit,600)})();<\/script>`
+const FIT_SCRIPT = `<script>(function(){var id=%ID%,last=-1;function fit(){var b=document.body,de=document.documentElement;if(!b)return;var w=de.clientWidth;if(w<40)return;b.style.zoom='';var s=Math.max(b.scrollWidth,de.scrollWidth),z=s>w+2?Math.max(0.2,w/s):1,raw=Math.max(b.scrollHeight,b.getBoundingClientRect().height);if(raw<1)return;if(z<1)b.style.zoom=String(z);var hgt=Math.ceil(raw*z)+2;if(hgt!==last){last=hgt;parent.postMessage({bdWidget:id,height:hgt},'*')}}var q=0;function soon(){if(q)return;q=setTimeout(function(){q=0;fit()},30)}window.addEventListener('load',fit);window.addEventListener('resize',soon);if(window.ResizeObserver){new ResizeObserver(soon).observe(document.documentElement)}new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var r=rs[i];if(!(r.type==='attributes'&&r.target===document.body&&r.attributeName==='style')){soon();return}}}).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});setTimeout(fit,50);setTimeout(fit,600);setTimeout(fit,1500)})();<\/script>`
 
-function buildDoc(widget, accent) {
+function buildDoc(widget, accent, large = false) {
   const html = widget.html || ''
-  const head = `<meta charset="utf-8"><style>${themeCss(accent)}</style>`
-  const script = FIT_SCRIPT.replace('%ID%', JSON.stringify(widget.id))
+  const head = `<meta charset="utf-8"><style>${themeCss(accent)}</style><script>document.documentElement.classList.add('bd-fit')<\/script>`
+  const script = FIT_SCRIPT.replace('%ID%', JSON.stringify(widget.id)) + (large ? '<style>body{padding:4px}</style>' : '')
   if (/<html[\s>]/i.test(html)) {
     let doc = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + head) : html.replace(/<html[^>]*>/i, m => m + '<head>' + head + '</head>')
     doc = /<\/body>/i.test(doc) ? doc.replace(/<\/body>/i, script + '</body>') : doc + script
@@ -734,12 +861,12 @@ function buildDoc(widget, accent) {
   return `<!doctype html><html><head>${head}</head><body>${html}${script}</body></html>`
 }
 
-function WidgetFrame({ widget, accent }) {
+function WidgetFrame({ widget, accent, large = false }) {
   const frameRef = useRef(null)
   const [height, setHeight] = useState(widget.height || 120)
-  const doc = useMemo(() => buildDoc(widget, accent), [widget.html, widget.id, accent])
+  const doc = useMemo(() => buildDoc(widget, accent, large), [widget.html, widget.id, accent, large])
   useEffect(() => {
-    if (widget.height) return undefined
+    if (widget.height && !large) return undefined
     const onMsg = e => {
       // Only trust our own frame: a widget must not resize its neighbours.
       if (!frameRef.current || e.source !== frameRef.current.contentWindow) return
@@ -749,18 +876,44 @@ function WidgetFrame({ widget, accent }) {
     }
     window.addEventListener('message', onMsg)
     return () => window.removeEventListener('message', onMsg)
-  }, [widget.id, widget.height])
+  }, [widget.id, widget.height, large])
   return h('iframe', {
     ref: frameRef,
     className: 'bd-frame',
     title: widget.title,
     sandbox: 'allow-scripts',
+    scrolling: 'no',
     srcDoc: doc,
-    style: { height: widget.height || height }
+    style: { height: large ? height : widget.height || height }
   })
 }
 
+// Full-width view for widgets designed wider than the side pane.
+function WidgetOverlay({ widget, accent, onClose }) {
+  useEffect(() => {
+    const onKey = e => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return h(
+    'div',
+    { className: 'bd-overlay', role: 'dialog', 'aria-modal': true, 'aria-label': widget.title, onMouseDown: e => e.target === e.currentTarget && onClose() },
+    h(
+      'div',
+      { className: 'bd-overlay-box' },
+      h(
+        'div',
+        { className: 'bd-overlay-head' },
+        h('span', { className: 'bd-card-title' }, widget.title),
+        h('button', { type: 'button', className: 'bd-btn', onClick: onClose, title: 'Close (Esc)' }, 'Close')
+      ),
+      h('div', { className: 'bd-overlay-body' }, h(WidgetFrame, { widget, accent, large: true }))
+    )
+  )
+}
+
 function CustomWidget({ bot, widget }) {
+  const [open, setOpen] = useState(false)
   return h(
     Card,
     {
@@ -769,7 +922,13 @@ function CustomWidget({ bot, widget }) {
       title: widget.title,
       info: `A custom widget ${widget.author === 'bot' ? `built by @${bot.id}` : 'you added'}. Ask the bot in chat to change it, or use Customize to edit its HTML. Last updated ${widget.updated || 'unknown'}.`
     },
-    h(WidgetFrame, { widget, accent: bot.color })
+    h(WidgetFrame, { widget, accent: bot.color }),
+    h(
+      'div',
+      { style: { display: 'flex', justifyContent: 'flex-end', marginTop: 6 } },
+      h('button', { type: 'button', className: 'bd-mini', onClick: () => setOpen(true), title: 'Open this widget at full size' }, 'Open large')
+    ),
+    open ? h(WidgetOverlay, { widget, accent: bot.color, onClose: () => setOpen(false) }) : null
   )
 }
 
@@ -793,8 +952,8 @@ function WidgetEditor({ bot, widget, onDone, onChanged }) {
     'div',
     { className: 'bd-editor' },
     h('div', { className: 'bd-editor-title' }, widget ? `Edit “${widget.title}”` : 'New widget'),
-    h('input', { className: 'bd-input', placeholder: 'Widget title', 'aria-label': 'Widget title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }),
-    h('textarea', { className: 'bd-input bd-textarea mono', rows: 9, placeholder: '<div>Widget HTML…</div>', 'aria-label': 'Widget HTML', value: html, spellCheck: false, onChange: e => setHtml(e.target.value) }),
+    h('input', { className: 'desktop-input-chrome bd-input', placeholder: 'Widget title', 'aria-label': 'Widget title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }),
+    h('textarea', { className: 'desktop-input-chrome bd-input bd-textarea mono', rows: 9, placeholder: '<div>Widget HTML…</div>', 'aria-label': 'Widget HTML', value: html, spellCheck: false, onChange: e => setHtml(e.target.value) }),
     h('div', { className: 'bd-hint' }, 'Tip: you can also ask the bot in chat, for example “add a weekly sleep chart to your panel”.'),
     h('div', { style: { display: 'flex', gap: 6, justifyContent: 'flex-end' } },
       h('button', { type: 'button', className: 'bd-btn', onClick: onDone }, 'Cancel'),

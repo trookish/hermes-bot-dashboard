@@ -6,8 +6,12 @@ set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || echo "$LOCALAPPDATA")/hermes"
 # Live runtime: the newest install environment (hermes-agent/venv goes stale after updates).
-PY="$(ls -td "$ROOT"/installs/*/environments/*/venv/Scripts/python.exe 2>/dev/null | head -1)"
-[ -x "$PY" ] || { echo "Hermes runtime python not found" >&2; exit 1; }
+# Install envs share one fixed mtime, so pick the first one that can import the runtime.
+PY=""
+for cand in "$ROOT"/installs/*/environments/*/venv/Scripts/python.exe; do
+  if "$cand" -c "import fastapi, hermes_cli" >/dev/null 2>&1; then PY="$cand"; break; fi
+done
+[ -n "$PY" ] || { echo "Hermes runtime python not found" >&2; exit 1; }
 
 copy_to() {
   local dest="$1/plugins/bot-dashboard"
