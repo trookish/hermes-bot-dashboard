@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Install Bot Dashboard into the root Hermes home and every profile, then enable it.
+# Developer script: copy this checkout into the root Hermes home and every profile, then
+# enable it. Users install with `hermes plugins install bot-dashboard` instead.
 # Usage: ./deploy.sh            (all profiles)
 #        ./deploy.sh health     (one profile)
+#        HERMES_ROOT=/path/to/hermes ./deploy.sh
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || echo "$LOCALAPPDATA")/hermes"
+if [ -n "${HERMES_ROOT:-}" ]; then ROOT="$HERMES_ROOT"
+elif [ -n "${LOCALAPPDATA:-}" ]; then ROOT="$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || echo "$LOCALAPPDATA")/hermes"
+else ROOT="$HOME/.hermes"; fi
 # Live runtime: the newest install environment (hermes-agent/venv goes stale after updates).
 # Install envs share one fixed mtime, so pick the first one that can import the runtime.
 PY=""
-for cand in "$ROOT"/installs/*/environments/*/venv/Scripts/python.exe; do
+for cand in "$ROOT"/installs/*/environments/*/venv/Scripts/python.exe "$ROOT"/installs/*/environments/*/venv/bin/python "$ROOT"/hermes-agent/venv/bin/python; do
+  [ -x "$cand" ] || continue
   if "$cand" -c "import fastapi, hermes_cli" >/dev/null 2>&1; then PY="$cand"; break; fi
 done
 [ -n "$PY" ] || { echo "Hermes runtime python not found" >&2; exit 1; }

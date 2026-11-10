@@ -1,5 +1,5 @@
 // Bot Dashboard: Hermes Desktop pane (disk plugin, loaded uncompiled).
-// Shows the focused chat's bot: profile, scheduled jobs, TaskNotes and projects.
+// Shows the focused chat's bot: profile, scheduled jobs, tasks, notes and projects.
 // Only @hermes/plugin-sdk and react may be imported here.
 import * as sdk from '@hermes/plugin-sdk'
 import { host, useValue } from '@hermes/plugin-sdk'
@@ -729,8 +729,8 @@ function TasksWidget({ bot, onChanged }) {
       title: 'Tasks',
       count: open.length,
       info: members
-        ? 'Open TaskNotes owned by any member of this group. Tick a task to mark it done; the note in the vault updates. A new task is saved as a TaskNote for the member you pick.'
-        : 'TaskNotes in HermesBrain that carry bot: ' + bot.id + '. Tick a task to mark it done; the note in the vault updates. New tasks are saved as TaskNotes for this bot.'
+        ? `Open task notes in your vault's ${vaultOf(bot).tasks} folder owned by any member of this group. Tick a task to mark it done; the note updates. A new task is saved for the member you pick.`
+        : `Task notes in your vault's ${vaultOf(bot).tasks} folder with ${vaultOf(bot).owner}: ${bot.id}. Tick a task to mark it done; the note updates. New tasks are saved for this bot.`
     },
     open.length === 0 ? h(Empty, null, members ? 'No open tasks for any member.' : 'No open tasks for this bot.') : open.map(row),
     done.length
@@ -784,8 +784,8 @@ function ProjectsWidget({ bot }) {
       title: 'Projects',
       count: bot.projects.length,
       info: isGroup(bot)
-        ? `Project notes in HermesBrain/02 Projects owned by any member of this group. A project not updated for ${14} days or more is flagged as stale.`
-        : `Project notes in HermesBrain/02 Projects that carry bot: ${bot.id}. A project not updated for ${14} days or more is flagged as stale.`
+        ? `Project notes in your vault's ${vaultOf(bot).projects} folder owned by any member of this group. A project not updated for 14 days or more is flagged as stale.`
+        : `Project notes in your vault's ${vaultOf(bot).projects} folder with ${vaultOf(bot).owner}: ${bot.id}. A project not updated for 14 days or more is flagged as stale.`
     },
     bot.projects.length === 0
       ? h(Empty, null, isGroup(bot) ? 'No projects are linked to any member.' : 'No projects are linked to this bot.')
@@ -962,18 +962,52 @@ function buildDoc(widget, accent, large = false) {
   return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`
 }
 
+// Widget HTML is written by a model, so it gets no network at all: the policy
+// is the first element of the document, ahead of anything the widget brings,
+// and a second policy inside the widget can only narrow it further.
+const WIDGET_CSP =
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+  "img-src data: blob:; font-src data:; media-src data: blob:; form-action 'none'; base-uri 'none'"
+
+function frameDoc(widget, accent, large) {
+  const doc = buildDoc(widget, accent, large)
+  const csp = `<meta http-equiv="Content-Security-Policy" content="${WIDGET_CSP}">`
+  // Prepend the policy before the widget's own markup; the parser hoists the
+  // meta into <head>, so it applies before any of the widget's elements load.
+  return /^\s*<!doctype[^>]*>/i.test(doc) ? doc.replace(/^\s*<!doctype[^>]*>/i, m => m + csp) : csp + doc
+}
+
+function vaultOf(bot) {
+  const v = (bot && bot.vault) || {}
+  return { set: !!v.set, found: !!v.found, tasks: v.tasks || 'TaskNotes/Tasks', projects: v.projects || 'Projects', owner: v.owner || 'bot' }
+}
+
+// Tasks and projects come from an optional markdown vault. Say plainly when
+// none is set, instead of showing two empty cards with no reason.
+function vaultNotice(bot) {
+  const v = vaultOf(bot)
+  if (v.found) return null
+  const text = v.set
+    ? 'The notes vault folder in the Bot Dashboard settings was not found, so tasks and projects are empty.'
+    : 'Tasks and projects come from a markdown notes vault. Set vault_path in the Bot Dashboard plugin settings to show them.'
+  return h('div', { className: 'bd-hint', key: 'vault' }, text)
+}
+
 function WidgetFrame({ widget, accent, large = false }) {
-  const doc = useMemo(() => buildDoc(widget, accent, large), [widget.html, widget.id, accent, large])
+  const doc = useMemo(() => frameDoc(widget, accent, large), [widget.html, widget.id, accent, large])
   // A widget cannot report its own height without running a script we inject,
   // so the frame keeps the height the panel stored and scrolls inside.
-  return h('iframe', {
-    className: 'bd-frame',
-    title: widget.title,
-    sandbox: 'allow-scripts',
-    scrolling: 'auto',
-    srcDoc: doc,
-    style: { height: large ? 'min(70vh, 640px)' : widget.height || 180 }
-  })
+  const style = { height: large ? 'min(70vh, 640px)' : widget.height || 180 }
+  if (sdk.SandboxedFrame) {
+    // The SDK's guest frame: opaque origin, allowlisted sandbox tokens, no referrer.
+    return h(sdk.SandboxedFrame, {
+      className: 'bd-frame',
+      title: widget.title || 'Widget',
+      src: 'data:text/html;charset=utf-8,' + encodeURIComponent(doc),
+      style
+    })
+  }
+  return h('iframe', { className: 'bd-frame', title: widget.title, sandbox: 'allow-scripts', srcDoc: doc, style })
 }
 
 // Full-width view for widgets designed wider than the side pane.
@@ -1585,7 +1619,7 @@ function Dashboard({ target }) {
       : bot.reason === 'invalid'
         ? 'Open a bot from the Bots list to see its dashboard.'
         : 'The bot was deleted or renamed. Open a bot from the Bots list to see its dashboard.'
-    return h('div', { className: `bd${group ? ' bd-group' : ''}`, 'data-bot': botId, 'data-version': '0.6.1' },
+    return h('div', { className: `bd${group ? ' bd-group' : ''}`, 'data-bot': botId, 'data-version': '1.2.0' },
       h('div', { className: 'bd-card bd-missing' },
         h('div', { className: 'bd-missing-title' }, title),
         h('p', null, body),
@@ -1627,12 +1661,12 @@ function Dashboard({ target }) {
 
   return h(
     'div',
-    { className: `bd${group ? ' bd-group' : ''}`, style, 'data-bot': bot.id, 'data-kind': group ? 'group' : 'bot', 'data-version': '0.6.1' },
+    { className: `bd${group ? ' bd-group' : ''}`, style, 'data-bot': bot.id, 'data-kind': group ? 'group' : 'bot', 'data-version': '1.2.0' },
     ...visible.slice(0, heroAt + 1).map(cardFor),
     customizing ? h(CardBoundary, { key: 'customize', label: 'editor', resetKey: bot.id }, h(CustomizePanel, { bot, onChanged: load, onClose: () => setCustomizing(false) })) : null,
     error ? h('div', { className: 'bd-error', key: 'err' }, `Showing the last loaded data. ${error}`) : null,
     ...visible.slice(heroAt + 1).map(cardFor),
-    bot.brain ? null : h('div', { className: 'bd-error', key: 'brain' }, 'HermesBrain was not found, so tasks and projects are empty.'),
+    vaultNotice(bot),
     h('div', { className: 'bd-foot', key: 'foot' }, group ? `Group chat · ${bot.name}` : `Following @${bot.id}`)
   )
 }

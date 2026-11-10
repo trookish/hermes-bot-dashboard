@@ -2,48 +2,47 @@
 
 Gives every bot two tools — ``bot_panel`` for its own dashboard and
 ``group_dashboard`` for a group chat's dashboard — plus a short first-turn
-context note so the bot knows the panes exist. Both tools read and write the
-same files the desktop panes render.
+context note so the bot knows the panes exist. An optional per-turn instruction
+(the ``panel_rule`` setting) is off unless the user writes one. Both tools read
+and write the same files the desktop panes render.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bd_settings  # noqa: E402
 from panel_store import BUILTIN, Panel, PanelError  # noqa: E402
 
 logger = logging.getLogger(__name__)
 TOOL = "bot_panel"
 GROUP_TOOL = "group_dashboard"
+TOOLSET = "bot_dashboard"
 
 
 def _home() -> Path:
-    home = os.environ.get("HERMES_HOME")
-    if home:
-        return Path(home)
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "hermes"
+    return bd_settings.hermes_home()
 
 
 def _bot_id() -> str:
-    parts = Path(_home()).parts
-    return parts[-1] if len(parts) >= 2 and parts[-2] == "profiles" else "hermes"
+    return bd_settings.bot_id()
 
 
 SCHEMA = {
     "name": TOOL,
     "description": (
-        "Read or edit YOUR OWN Bot Panel: the dashboard Turki sees beside your chat in the Hermes "
+        "Read or edit YOUR OWN Bot Panel: the dashboard the user sees beside your chat in the Hermes "
         "desktop app (tab 'Bot', next to Scheduled jobs). Built-in cards: profile, scheduled jobs, "
         "tasks, notes, projects. You can add custom widgets (self-contained HTML, rendered in a "
         "sandboxed frame about 320px wide that scales wider content down to fit; theme with the CSS "
-        "variables --foreground, --muted-foreground, --border, --accent, --card; no external "
-        "network), and read or write shared notes. Use it when Turki asks to add, change or remove "
-        "something in your panel, to pin a useful view (plan, tracker, grid) there, or to leave him "
+        "variables --foreground, --muted-foreground, --border, --accent, --card; network access is "
+        "blocked, so inline every image, style and script), and read or write shared notes. Use it "
+        "when the user asks to add, change or remove "
+        "something in your panel, to pin a useful view (plan, tracker, grid) there, or to leave them "
         "a note. Actions: view, add_widget, update_widget, remove_widget, list_notes, add_note, "
         "update_note, delete_note, set_layout."
     ),
@@ -145,7 +144,7 @@ GROUP_SCHEMA = {
     "description": (
         "Read or edit a GROUP chat's dashboard: the 'Group' pane in the Hermes desktop app. "
         "It shows members and their state, recent room activity, tasks owned by any member, "
-        "HermesBrain projects, shared notes, and custom HTML widgets. Any bot that is a member "
+        "projects from the user's notes vault (when one is set), shared notes, and custom HTML widgets. Any bot that is a member "
         "of the group can use it to read the room's state or to leave a note, pin a widget or "
         "reorder the pane for everyone in that group. Actions: list_groups, view, add_widget, "
         "update_widget, remove_widget, list_notes, add_note, update_note, delete_note, set_layout."
@@ -275,26 +274,21 @@ def handle_group(args: dict, **_kw) -> str:
         return _err(f"Group dashboard operation failed: {exc}")
 
 
-# Narrow phrases only: bare "لوحة" also means licence plate (Plate Lab).
+# Narrow phrases only: bare "لوحة" also means a licence plate or a painting.
 _PANEL_WORDS = ("panel", "dashboard", "widget", "sidebar", "my notes", "بانل", "البانل",
                 "لوحتك", "لوحة البوت", "اللوحة الجانبية", "ويدجت")
 
-# Rides every turn: short, constant, and never restated by the user.
-_PANEL_RULE = (
-    "[Bot Panel] Standing rule: record the work in the panel unprompted — open a todo_list task per "
-    "unit of work (it shows in the panel's Tasks card) and add a bot_panel note for each decision, "
-    "constraint or finding. Keep both current as the work moves."
-)
-
-
 def _first_turn_context(is_first_turn: bool = False, user_message: str = "", **_kw):
-    """Inject the panel rule on every turn, plus a live snapshot on the first.
+    """Tell the bot the panes exist, on the first turn or when a message asks about them.
 
-    The rule is short and constant, so it rides in the turn's user message and
-    never disturbs the cached system prompt. Only the first turn (or a mention
-    of the panel) pays for the snapshot.
+    Plain turns get nothing, unless the user wrote an instruction into the
+    ``panel_rule`` setting; that text then rides every turn in the turn's user
+    message, so the cached system prompt is never disturbed. The default is empty.
     """
-    parts = [_PANEL_RULE]
+    parts = []
+    rule = bd_settings.setting("panel_rule")
+    if rule:
+        parts.append(f"[Bot Panel] {rule[:600]}")
     msg = str(user_message or "").lower()
     if is_first_turn or any(w in msg for w in _PANEL_WORDS):
         try:
@@ -303,7 +297,7 @@ def _first_turn_context(is_first_turn: bool = False, user_message: str = "", **_
             notes = panel.notes()
             recent = "; ".join(n["text"].splitlines()[0][:80] for n in notes[:3]) or "none"
             parts.append(
-                f"Turki sees this panel beside the chat (desktop tab 'Bot'): profile, scheduled jobs, "
+                f"The user sees this panel beside the chat (desktop tab 'Bot'): profile, scheduled jobs, "
                 f"tasks, notes, projects, and custom widgets ({widgets}). Notes: {len(notes)}; latest: "
                 f"{recent}. The 'Group' tab shows a group chat's dashboard: members, activity, shared "
                 f"tasks and projects. Read or edit either with the bot_panel (your own) and "
@@ -311,21 +305,12 @@ def _first_turn_context(is_first_turn: bool = False, user_message: str = "", **_
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("bot panel context skipped: %s", exc)
-    return {"context": "\n".join(parts)}
+    return {"context": "\n".join(parts)} if parts else None
 
 
 def register(ctx):
-    ctx.register_tool(name=TOOL, toolset="file", schema=SCHEMA, handler=handle,
+    ctx.register_tool(name=TOOL, toolset=TOOLSET, schema=SCHEMA, handler=handle,
                       description="Read and edit this bot's desktop panel.", emoji="🧩")
-    ctx.register_tool(name=GROUP_TOOL, toolset="file", schema=GROUP_SCHEMA, handler=handle_group,
+    ctx.register_tool(name=GROUP_TOOL, toolset=TOOLSET, schema=GROUP_SCHEMA, handler=handle_group,
                       description="Read and edit a group chat's desktop dashboard.", emoji="👥")
     ctx.register_hook("pre_llm_call", _first_turn_context)
-    try:  # keep the tool eager on any model; degrade to deferred discovery if this list moves
-        import toolsets
-        core = getattr(toolsets, "_HERMES_CORE_TOOLS", None)
-        if isinstance(core, list):
-            for name in (TOOL, GROUP_TOOL):
-                if name not in core:
-                    core.append(name)
-    except Exception:  # noqa: BLE001
-        pass

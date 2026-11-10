@@ -39,9 +39,13 @@ MOD = load()
 TOOLS = []
 
 
+REGISTERED = []
+
+
 class Ctx:
     def register_tool(self, **kw):
         TOOLS.append(kw["name"])
+        REGISTERED.append(kw)
 
     def register_hook(self, *a, **kw):
         TOOLS.append(a[0])
@@ -57,6 +61,16 @@ def test_register():
     assert "bot_panel" in TOOLS, TOOLS
     assert "group_dashboard" in TOOLS, TOOLS
     assert "pre_llm_call" in TOOLS, TOOLS
+    sets = {kw["toolset"] for kw in REGISTERED}
+    assert sets == {"bot_dashboard"}, f"tools must live in the plugin's own toolset, got {sets}"
+
+
+def test_no_core_internals():
+    src = (ROOT / "__init__.py").read_text(encoding="utf-8")
+    for bad in ("import toolsets", "_HERMES_CORE_TOOLS", "agent-hooks", "brain_tasks", "LOCALAPPDATA", "Turki"):
+        for f in ("__init__.py", "dashboard/plugin_api.py", "bd_settings.py", "desktop/plugin.js"):
+            assert bad not in (ROOT / f).read_text(encoding="utf-8"), f"{bad!r} found in {f}"
+    assert src
 
 
 def test_schemas_match_runners():
@@ -123,14 +137,49 @@ def test_widget_roundtrip():
     assert wid not in left, left
 
 
-def test_hook_rule_rides_every_turn():
-    first = MOD._first_turn_context(is_first_turn=True, user_message="hi")
-    later = MOD._first_turn_context(is_first_turn=False, user_message="keep going")
-    for out in (first, later):
-        assert MOD._PANEL_RULE in out["context"], out
-        assert "todo_list" in out["context"] and "bot_panel" in out["context"], out
+def test_tools_follow_the_session_profile():
+    """One process serves many bots; the tool must write to the calling bot's panel."""
+    import tempfile
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "profiles" / "scout"
+        home.mkdir(parents=True)
+        token = set_hermes_home_override(home)
+        try:
+            assert MOD._bot_id() == "scout", MOD._bot_id()
+            out = json.loads(MOD.handle({"action": "add_note", "text": "routed"}))
+            assert "error" not in out, out
+            assert "routed" in (home / "panel" / "notes.json").read_text(encoding="utf-8")
+        finally:
+            reset_hermes_home_override(token)
+
+
+def test_hook_is_quiet_by_default():
+    # Defaults only: ignore whatever this machine's config.yaml sets.
+    real = MOD.bd_settings.setting
+    MOD.bd_settings.setting = lambda key: MOD.bd_settings.DEFAULTS.get(key, "")
+    try:
+        first = MOD._first_turn_context(is_first_turn=True, user_message="hi")
+        later = MOD._first_turn_context(is_first_turn=False, user_message="keep going")
+        asked = MOD._first_turn_context(is_first_turn=False, user_message="add a widget to my dashboard")
+    finally:
+        MOD.bd_settings.setting = real
     assert "desktop tab 'Bot'" in first["context"], first
-    assert "desktop tab 'Bot'" not in later["context"], "the snapshot repeated on a plain turn"
+    assert later is None, f"a plain turn got context: {later}"
+    assert "desktop tab 'Bot'" in asked["context"], asked
+    assert "Turki" not in first["context"] and "the user" in first["context"].lower(), first
+
+
+def test_panel_rule_is_opt_in():
+    import os
+    os.environ["BOT_DASHBOARD_PANEL_RULE"] = "Keep a note for each decision."
+    try:
+        later = MOD._first_turn_context(is_first_turn=False, user_message="keep going")
+        assert later and "Keep a note for each decision." in later["context"], later
+        assert "desktop tab 'Bot'" not in later["context"], "the snapshot repeated on a plain turn"
+    finally:
+        os.environ.pop("BOT_DASHBOARD_PANEL_RULE", None)
 
 
 check("both tools and the hook register", test_register)
@@ -140,7 +189,10 @@ check("list_groups answers", test_list_groups)
 check("view returns the whole group picture", test_view_and_write_path)
 check("missing group is a plain message", test_missing_group_is_a_message)
 check("widget add/remove roundtrip", test_widget_roundtrip)
-check("panel rule rides every turn", test_hook_rule_rides_every_turn)
+check("tools avoid core internals and personal paths", test_no_core_internals)
+check("tools follow the session's profile", test_tools_follow_the_session_profile)
+check("hook adds nothing to plain turns by default", test_hook_is_quiet_by_default)
+check("panel rule is opt-in through settings", test_panel_rule_is_opt_in)
 
 print(f"\n{len(PASS)}/{len(PASS) + len(FAIL)} passed")
 sys.exit(1 if FAIL else 0)

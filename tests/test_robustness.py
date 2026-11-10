@@ -9,9 +9,11 @@ root = tmp / "hermes"
 brain = tmp / "brain"
 (root / "profiles").mkdir(parents=True)
 (brain / "TaskNotes" / "Tasks").mkdir(parents=True)
-(brain / "02 Projects").mkdir(parents=True)
-os.environ["LOCALAPPDATA"] = str(tmp)
-os.environ["HERMES_BRAIN"] = str(brain)
+(brain / "Projects").mkdir(parents=True)
+# Paths come from hermes_constants only: no LOCALAPPDATA, no home-folder guess.
+os.environ.pop("LOCALAPPDATA", None)
+os.environ["HERMES_HOME"] = str(root)
+os.environ["BOT_DASHBOARD_VAULT_PATH"] = str(brain)
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "dashboard"))
@@ -44,7 +46,7 @@ p = root / "profiles" / "broken"
 (p / "config.yaml").write_text("model: just-a-string\nplugins: [x]\nagent: 5\nskills:\n  disabled: abc\nmcp_servers: [1,2]\nplatform_toolsets: nope\nfallback_providers: {a: 1}\n", encoding="utf-8")
 (p / "SOUL.md").write_bytes(b"\xff\xfe bad utf8 \x80")
 (p / "assets" / "avatar.svg").mkdir()  # a folder where a file is expected
-(brain / "02 Projects" / "P.md").write_text("---\nbot: broken\nupdated: 2026-13-45\nstatus: active\n---\n", encoding="utf-8")
+(brain / "Projects" / "P.md").write_text("---\nbot: broken\nupdated: 2026-13-45\nstatus: active\n---\n", encoding="utf-8")
 (brain / "TaskNotes" / "Tasks" / "T.md").write_text("---\nbot: [broken]\ntitle: x\ndue: 2026-99-99\n---\n", encoding="utf-8")
 (brain / "TaskNotes" / "Tasks" / "Bad.md").write_text("---\n: : : [\n---\n", encoding="utf-8")
 (p / "panel").mkdir()
@@ -117,20 +119,18 @@ members = json.dumps([{"profile": "alpha", "handle": "alpha", "display_name": "A
                       {"target": {"kind": "local", "profile": "deadbot"}, "handle": "deadbot"}])
 for rid in ("room.1", "room_1", "room:1"):
     db.execute("INSERT INTO hosted_rooms VALUES(?,?,?,?,?,?,NULL)", (rid, "Team " + rid, members, 1, now - 100, now))
-db.execute("INSERT INTO hosted_room_events VALUES('room.1',1,'message.posted','{\"display_name\":\"Turki\"}',?)", (now,))
+db.execute("INSERT INTO hosted_room_events VALUES('room.1',1,'message.posted','{\"display_name\":\"User\"}',?)", (now,))
 db.execute("INSERT INTO hosted_room_driver_leases VALUES('room.1',?,NULL)", (now + 60,))
 db.execute("INSERT INTO hosted_room_driver_tasks VALUES('room.1',NULL)")
 db.commit(); db.close()
-plugin_api.HERMES_ROOT = odd
-plugin_api.ROOM_DBS = (odd / "shared-state.db", odd / "state.db")
-plugin_api.PROFILES = odd / "profiles" if hasattr(plugin_api, "PROFILES") else None
+os.environ["HERMES_HOME"] = str(odd)
 g = c.get("/groups").json()["groups"]
 check("rooms read through an escaped URI", len(g) == 3, g)
 s = c.get("/group", params={"id": "group:id:room.1"}).json()
 check("group: members resolved", [m["missing"] for m in s.get("members", [])] == [False, True], s.get("members"))
 check("group: target.profile member is the deleted bot", s["members"][1]["id"] == "deadbot")
 check("group: live lease and running task", s.get("live") is True and s.get("running") == 1, s)
-check("group: event listed", s.get("eventCount") == 1 and s["events"][0]["actor"] == "Turki", s.get("events"))
+check("group: event listed", s.get("eventCount") == 1 and s["events"][0]["actor"] == "User", s.get("events"))
 r = c.post("/panel/note", json={"bot": "group:id:room.1", "text": "only room.1"})
 check("note on a real group -> 200", r.status_code == 200, r.text[:160])
 others = [c.get("/group", params={"id": f"group:id:{x}"}).json()["panel"]["notes"] for x in ("room_1", "room:1")]
@@ -140,8 +140,39 @@ time.sleep(0.05)
 (odd / "profiles" / "alpha" / "profile.yaml").write_text("ui_meta:\n  hermes-bots:\n    title: Alpha 2\n", encoding="utf-8")
 check("group stamp changes when a member is edited", c.get("/group/stamp", params={"id": "group:id:room.1"}).json()["stamp"] != s1)
 
-# 8. a profile deleted between the existence check and the write is not recreated
-import panel_store as _ps
+# 8. tasks are written by the plugin itself, into the configured folder only
+os.environ["HERMES_HOME"] = str(root)
+(root / "profiles" / "worker").mkdir()
+r = c.post("/task", json={"bot": "worker", "title": 'Ship: the "v2" build/notes?'})
+check("POST /task with a vault -> 200", r.status_code == 200, r.text[:160])
+made = brain / "TaskNotes" / "Tasks" / r.json().get("file", "none")
+import yaml as _y
+front = _y.safe_load(made.read_text(encoding="utf-8").split("---")[1]) if made.is_file() else {}
+check("task note: owner, status, tag", front.get("bot") == "worker" and front.get("status") == "open" and front.get("tags") == ["task"], front)
+check("task shows in the bot's tasks", any(x.get("title") == 'Ship: the "v2" build/notes?' for x in c.get("/bot", params={"id": "worker"}).json().get("tasks", [])))
+r2 = c.post("/task", json={"bot": "worker", "title": 'Ship: the "v2" build/notes?'})
+check("same title twice -> two files", r2.status_code == 200 and r2.json()["file"] != r.json()["file"], r2.text[:160])
+os.environ["BOT_DASHBOARD_OWNER_FIELD"] = "assignee"
+(brain / "TaskNotes" / "Tasks" / "Mine.md").write_text("---\nassignee: worker\ntitle: custom owner\nstatus: open\n---\n", encoding="utf-8")
+check("owner_field setting is honoured", [x["title"] for x in c.get("/bot", params={"id": "worker"}).json()["tasks"]] == ["custom owner"])
+os.environ.pop("BOT_DASHBOARD_OWNER_FIELD")
+os.environ["BOT_DASHBOARD_VAULT_PATH"] = ""
+j = c.get("/bot", params={"id": "worker"}).json()
+check("no vault set: says so, empty cards", j.get("vault", {}).get("set") is False and j["tasks"] == [] and j["projects"] == [], j.get("vault"))
+r = c.post("/task", json={"bot": "worker", "title": "t"})
+check("no vault set: /task -> 409 with a reason", r.status_code == 409 and "vault_path" in r.text, r.text[:160])
+os.environ["BOT_DASHBOARD_VAULT_PATH"] = str(tmp / "nowhere")
+check("vault missing on disk: found False", c.get("/bot", params={"id": "worker"}).json()["vault"] == {**j["vault"], "set": True, "found": False})
+check("missing vault folder not created", c.post("/task", json={"bot": "worker", "title": "t"}).status_code == 409 and not (tmp / "nowhere").exists())
+os.environ["BOT_DASHBOARD_VAULT_PATH"] = str(brain)
+# a settings value in config.yaml is read too
+(root / "config.yaml").write_text("plugins:\n  entries:\n    bot-dashboard:\n      settings:\n        projects_folder: Work\n", encoding="utf-8")
+import bd_settings as _bs  # noqa: E402
+check("config.yaml plugin settings are read", _bs.setting("projects_folder") == "Work" and _bs.projects_dir() == brain / "Work")
+(root / "config.yaml").unlink()
+os.environ["HERMES_HOME"] = str(odd)
+
+# 9. a profile deleted between the existence check and the write is not recreated
 home = odd / "profiles" / "racer"
 home.mkdir()
 pn = Panel(home)

@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.2.0
+
+Review fixes for the plugin catalog, and no assumptions about one person's setup.
+
+- **Own toolset.** `bot_panel` and `group_dashboard` register under the
+  `bot_dashboard` toolset. The plugin no longer adds them to core's tool tables
+  or to the built-in `file` toolset; turn them on per platform like any toolset.
+- **Task creation lives in the plugin.** `POST /task` writes the task note
+  itself, into the configured tasks folder only, with a safe, unique file name.
+  With no vault set it answers 409 with the reason instead of guessing a folder.
+- **PyYAML is declared** (`PyYAML>=6.0,<7`).
+- **Settings instead of hard-coded paths.** Paths come from Hermes
+  (`hermes_constants`), so the plugin follows the active profile on Windows,
+  macOS and Linux. The notes vault is optional and set in Settings ▸ Plugins ▸
+  Bot Dashboard: `vault_path`, `tasks_folder`, `projects_folder`, `owner_field`.
+  When none is set, the panes say so in a short hint.
+- **The per-turn instruction is opt-in.** The 1.1.2 standing rule is now the
+  `panel_rule` setting, empty by default; a plain turn gets nothing extra.
+- **Tools write to the calling bot's panel.** In a process that serves several
+  bots, the tools now follow the session's profile; before, a bot without
+  `HERMES_HOME` set wrote to the root profile's panel.
+- **Widgets have no network.** A Content-Security-Policy is placed ahead of
+  every widget's markup, and the pane uses the SDK's `SandboxedFrame` when the
+  host provides it.
+
 ## 1.1.2
 
 - **The panel rule is standing.** The `pre_llm_call` hook now injects a short

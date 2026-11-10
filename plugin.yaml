@@ -1,5 +1,5 @@
 name: bot-dashboard
-version: 1.1.2
+version: 1.2.0
 description: >-
   Two desktop panes in one plugin. "Bot" shows the focused bot's dashboard — profile,
   scheduled jobs, tasks, notes, projects and its custom widgets. "Group" shows the
@@ -16,4 +16,30 @@ provides_hooks: [pre_llm_call]
 provides_middleware: []
 capabilities: []
 requires_env: []
-python_dependencies: []
+python_dependencies:
+  - "PyYAML>=6.0,<7"
+config_schema:
+  vault_path:
+    type: str
+    default: ""
+    description: >-
+      Folder of a markdown notes vault (for example an Obsidian vault). Optional: when it is
+      empty the Tasks and Projects cards say so, and everything else works without it.
+  tasks_folder:
+    type: str
+    default: "TaskNotes/Tasks"
+    description: Folder inside the vault that holds one markdown note per task.
+  projects_folder:
+    type: str
+    default: "Projects"
+    description: Folder inside the vault that holds one markdown note per project.
+  owner_field:
+    type: str
+    default: "bot"
+    description: Frontmatter key that names the bot (profile name) a task or project belongs to.
+  panel_rule:
+    type: str
+    default: ""
+    description: >-
+      Optional instruction added to every turn (for example, keep a note in the panel for
+      each decision). Empty by default, so the plugin adds nothing to plain turns.

@@ -1,8 +1,9 @@
 """Bot Dashboard REST half: per-bot profile facts, TaskNotes and project notes.
 
 Served by the Hermes dashboard web server under ``/api/plugins/bot-dashboard``.
-Reads the shared Hermes root (every profile) and the HermesBrain vault. The only
-writes are TaskNotes: create a task for a bot, or flip one open/done.
+Reads the shared Hermes root (every profile) and, when the user has set one, a
+markdown notes vault (``vault_path`` setting). The only vault writes are task notes:
+create a task for a bot, or flip one open/done.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import hashlib
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import time
@@ -25,24 +27,32 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import bd_settings  # noqa: E402
 from panel_store import GROUP_BUILTIN, Panel, PanelError  # noqa: E402
 
 router = APIRouter()
 
-HERMES_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "hermes"
-BRAIN = Path(os.environ.get("HERMES_BRAIN", str(Path.home() / "Desktop" / "HermesBrain")))
-TASKS_DIR = BRAIN / "TaskNotes" / "Tasks"
-PROJECTS_DIR = BRAIN / "02 Projects"
+
+def _root() -> Path:
+    return bd_settings.hermes_root()
+
+
+def _md_files(folder: Optional[Path]) -> list[Path]:
+    if folder is None or not folder.is_dir():
+        return []
+    return list(folder.glob("*.md"))
+
+
 BOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 STALE_DAYS = 14
 
 
 def _bot_home(bot: str) -> Path:
     if bot in ("", "default", "hermes"):
-        return HERMES_ROOT
+        return _root()
     if not BOT_ID.fullmatch(bot or ""):
         raise HTTPException(400, "Invalid bot id.")
-    home = HERMES_ROOT / "profiles" / bot
+    home = _root() / "profiles" / bot
     if not home.is_dir():
         raise HTTPException(404, f"No profile named {bot}. It may have been deleted or renamed.")
     return home
@@ -113,7 +123,7 @@ def _day(value: Any) -> Optional[str]:
 
 
 def _owned(fields: dict, bot: str) -> bool:
-    owner = fields.get("bot")
+    owner = fields.get(bd_settings.owner_field())
     owners = owner if isinstance(owner, list) else [owner]
     return bot in [str(o).strip() for o in owners if o]
 
@@ -153,9 +163,7 @@ def _skills(home: Path, config: dict) -> tuple[int, int]:
 
 def _tasks(bot: str) -> list[dict]:
     out = []
-    if not TASKS_DIR.is_dir():
-        return out
-    for path in TASKS_DIR.glob("*.md"):
+    for path in _md_files(bd_settings.tasks_dir()):
         fields, _ = _frontmatter(path)
         if not _owned(fields, bot):
             continue
@@ -173,10 +181,8 @@ def _tasks(bot: str) -> list[dict]:
 
 def _projects(bot: str) -> list[dict]:
     out = []
-    if not PROJECTS_DIR.is_dir():
-        return out
     today = date.today()
-    for path in PROJECTS_DIR.glob("*.md"):
+    for path in _md_files(bd_settings.projects_dir()):
         fields, _ = _frontmatter(path)
         if not _owned(fields, bot):
             continue
@@ -200,11 +206,11 @@ def _projects(bot: str) -> list[dict]:
 
 @router.get("/health")
 def health() -> dict:
-    return {"ok": True, "brain": BRAIN.is_dir(), "root": str(HERMES_ROOT)}
+    return {"ok": True, "vault": bd_settings.vault_state(), "root": str(_root())}
 
 
 def _missing(bot: str, reason: str) -> dict:
-    return {"id": bot, "missing": True, "reason": reason, "brain": BRAIN.is_dir()}
+    return {"id": bot, "missing": True, "reason": reason, "vault": bd_settings.vault_state()}
 
 
 @router.get("/bot")
@@ -258,7 +264,7 @@ def bot_summary(id: str = Query("", max_length=64)) -> dict:
         "skillCount": skill_count,
         "tasks": _safe(lambda: _tasks(bot), []),
         "projects": _safe(lambda: _projects(bot), []),
-        "brain": BRAIN.is_dir(),
+        "vault": bd_settings.vault_state(),
         "panel": _safe(lambda: Panel(home).summary(), {"layout": None, "widgets": [], "notes": []}),
     }
 
@@ -270,8 +276,10 @@ def _mtime(path: Path) -> int:
         return 0
 
 
-def _dir_stamp(folder: Path) -> int:
+def _dir_stamp(folder: Optional[Path]) -> int:
     """Newest change inside one folder (adds, deletes and edits), 0 when absent."""
+    if folder is None:
+        return 0
     try:
         return max([_mtime(folder)] + [_mtime(p) for p in folder.glob("*.md")])
     except OSError:
@@ -289,7 +297,7 @@ def bot_stamp(id: str = Query("", max_length=64)) -> dict:
     files = [home / "profile.yaml", home / "config.yaml", home / "SOUL.md",
              home / "assets" / "avatar.svg", home / "assets" / "avatar.png",
              home / "panel" / "layout.json", home / "panel" / "widgets.json", home / "panel" / "notes.json"]
-    parts = [_mtime(f) for f in files] + [_dir_stamp(TASKS_DIR), _dir_stamp(PROJECTS_DIR)]
+    parts = [_mtime(f) for f in files] + [_dir_stamp(bd_settings.tasks_dir()), _dir_stamp(bd_settings.projects_dir())]
     return {"stamp": "-".join(str(p) for p in parts)}
 
 
@@ -297,7 +305,9 @@ def bot_stamp(id: str = Query("", max_length=64)) -> dict:
 # Gateway group rooms live in the hosted_room* tables. Profile gateways write the
 # root shared-state.db; older installs kept them in state.db. Both are read
 # read-only, never written, and a room present in both keeps the newer copy.
-ROOM_DBS = (HERMES_ROOT / "shared-state.db", HERMES_ROOT / "state.db")
+def _room_dbs() -> tuple[Path, Path]:
+    root = _root()
+    return root / "shared-state.db", root / "state.db"
 ROOM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 GROUP_PREFIX = "group:"
 AVATAR_CAP = 400_000
@@ -305,7 +315,7 @@ AVATAR_CAP = 400_000
 
 def _rooms_query(sql: str, args: tuple = ()) -> list[tuple[Path, list[sqlite3.Row]]]:
     out = []
-    for db in ROOM_DBS:
+    for db in _room_dbs():
         if not db.is_file():
             continue
         try:
@@ -361,7 +371,7 @@ def _group_home(rid: str) -> Path:
     # punctuation or letter case (room.1, room_1, Room:1) in separate folders.
     slug = re.sub(r"[^a-z0-9_-]", "_", rid.lower())[:60]
     digest = hashlib.sha1(rid.encode("utf-8")).hexdigest()[:10]
-    return HERMES_ROOT / "plugin-data" / "bot-dashboard" / "groups" / f"{slug}-{digest}"
+    return _root() / "plugin-data" / bd_settings.PLUGIN_ID / "groups" / f"{slug}-{digest}"
 
 
 def _member_profile(m: dict) -> str:
@@ -513,7 +523,7 @@ def group_summary(id: str = Query("", max_length=200)) -> dict:
         **_safe(lambda: _room_live(rid, room["db"]), {"live": False, "running": 0}),
         "tasks": _group_tasks(local),
         "projects": projects,
-        "brain": BRAIN.is_dir(),
+        "vault": bd_settings.vault_state(),
         "panel": _safe(lambda: Panel(home, create_home=True, builtin=GROUP_BUILTIN).summary(), {"layout": None, "widgets": [], "notes": []}),
     }
 
@@ -533,7 +543,7 @@ def group_stamp(id: str = Query("", max_length=200)) -> dict:
     parts = [room["updatedAt"], room["revision"], room["disbandedAt"], count,
              *[_mtime(h / "profile.yaml") if h else "x" for h in homes],
              *[_mtime(_group_home(rid) / "panel" / f) for f in ("layout.json", "widgets.json", "notes.json")],
-             _dir_stamp(TASKS_DIR), _dir_stamp(PROJECTS_DIR)]
+             _dir_stamp(bd_settings.tasks_dir()), _dir_stamp(bd_settings.projects_dir())]
     return {"stamp": "-".join(str(p) for p in parts)}
 
 
@@ -575,13 +585,13 @@ class NoteBody(BaseModel):
 
 @router.post("/panel/note")
 def panel_note_add(body: NoteBody) -> dict:
-    return {"ok": True, "note": _guard(lambda: _panel(body.bot).add_note(body.text or "", author="turki"))}
+    return {"ok": True, "note": _guard(lambda: _panel(body.bot).add_note(body.text or "", author="user"))}
 
 
 @router.post("/panel/note/update")
 def panel_note_update(body: NoteBody) -> dict:
     return {"ok": True, "note": _guard(lambda: _panel(body.bot).update_note(
-        body.id or "", text=body.text, pinned=body.pinned, author="turki"))}
+        body.id or "", text=body.text, pinned=body.pinned, author="user"))}
 
 
 @router.post("/panel/note/delete")
@@ -608,7 +618,7 @@ def panel_widget_save(body: WidgetBody) -> dict:
     entry = _guard(lambda: panel.save_widget(
         title=body.title or (cur or {}).get("title", ""),
         html=body.html if body.html is not None else (cur or {}).get("html", ""),
-        wid=body.id, height=body.height, author="turki"))
+        wid=body.id, height=body.height, author="user"))
     return {"ok": True, "widget": entry}
 
 
@@ -619,12 +629,50 @@ def panel_widget_remove(body: WidgetBody) -> dict:
     return {"ok": True}
 
 
-def _brain_tasks():
-    hooks = str(HERMES_ROOT / "agent-hooks")
-    if hooks not in sys.path:
-        sys.path.insert(0, hooks)
-    import brain_tasks  # noqa: PLC0415 — vault helper lives outside the package
-    return brain_tasks
+def _vault_dir(folder: Optional[Path]) -> Path:
+    if folder is None:
+        raise HTTPException(409, "No notes vault is set. Set vault_path in the Bot Dashboard plugin settings.")
+    return folder
+
+
+def _task_filename(title: str, folder: Path) -> Path:
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title)
+    stem = " ".join(stem.split()).strip(". ")[:80] or "Task"
+    if stem.lower() in _RESERVED:
+        stem = f"{stem} task"
+    path = folder / f"{stem}.md"
+    while path.exists():
+        path = folder / f"{stem} {secrets.token_hex(2)}.md"
+    return path
+
+
+_RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+
+
+def create_task(title: str, owner: str, due: Optional[str] = None) -> Path:
+    """Write one task note with TaskNotes-compatible frontmatter into the tasks folder."""
+    folder = _vault_dir(bd_settings.tasks_dir())
+    root = bd_settings.vault()
+    if root is None or not root.is_dir():
+        raise HTTPException(409, "The notes vault folder was not found. Check vault_path in the plugin settings.")
+    folder.mkdir(parents=True, exist_ok=True)
+    now = datetime.now().replace(microsecond=0).isoformat()
+    fields = {
+        "title": title,
+        "status": "open",
+        "priority": "normal",
+        "due": due,
+        "tags": ["task"],
+        bd_settings.owner_field(): owner,
+        "dateCreated": now,
+        "dateModified": now,
+    }
+    path = _task_filename(title, folder)
+    body = yaml.safe_dump(fields, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    tmp = path.with_suffix(".md.tmp")
+    tmp.write_text(f"---\n{body}---\n\n# {title}\n", encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+    return path
 
 
 class NewTask(BaseModel):
@@ -641,8 +689,8 @@ def add_task(body: NewTask) -> dict:
     if not title:
         raise HTTPException(400, "A task needs a title.")
     due = body.due if body.due and re.match(r"^\d{4}-\d{2}-\d{2}$", body.due) else None
-    path = _brain_tasks().create(title, due=due, bot=bot)
-    return {"ok": True, "file": Path(path).name}
+    path = create_task(title, bot, due=due)
+    return {"ok": True, "file": path.name}
 
 
 class TaskStatus(BaseModel):
@@ -654,8 +702,9 @@ class TaskStatus(BaseModel):
 def set_task_status(body: TaskStatus) -> dict:
     if body.status not in ("open", "in-progress", "done"):
         raise HTTPException(400, "Unknown status.")
-    path = (TASKS_DIR / body.file).resolve()
-    if path.parent != TASKS_DIR.resolve() or path.suffix != ".md" or not path.is_file():
+    folder = _vault_dir(bd_settings.tasks_dir())
+    path = (folder / body.file).resolve()
+    if path.parent != folder.resolve() or path.suffix != ".md" or not path.is_file():
         raise HTTPException(404, "Task not found.")
     text = path.read_text(encoding="utf-8")
     m = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.S)
