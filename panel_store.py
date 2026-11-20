@@ -4,7 +4,9 @@ Lives in ``<profile home>/panel/``:
   layout.json            {"order": [...], "hidden": [...]}
   widgets.json           [{"id", "title", "height", "updated", "author"}]
   widgets/<id>.html      the widget body (self-contained HTML)
-  notes.json             [{"id", "text", "author", "created", "updated"}]
+  notes/<id>.md          one Markdown note per file (YAML frontmatter: title,
+                         tags, pinned, author, created, updated); notes.json
+                         from older versions is migrated on first use
 
 Shared by the agent half (bot tools) and the REST half (the desktop pane), so
 both always read and write the same files. Writes are atomic.
@@ -37,7 +39,7 @@ BUILTIN = ["profile", "jobs", "tasks", "notes", "projects"]
 # A group dashboard has no jobs of its own; it shows the room and its members.
 GROUP_BUILTIN = ["profile", "members", "activity", "tasks", "notes", "projects"]
 MAX_HTML = 200_000
-MAX_NOTE = 4_000
+MAX_NOTE = 100_000
 MAX_NOTES = 300
 MAX_WIDGETS = 24
 _SLUG = re.compile(r"[^a-z0-9]+")
@@ -51,6 +53,84 @@ def now() -> str:
 def slug(text: str) -> str:
     s = _SLUG.sub("-", text.lower()).strip("-")[:40]
     return s or "widget"
+
+
+_NOTE_ID = re.compile(r"[a-z0-9]{4,32}")
+_FM = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
+_TAG = re.compile(r"(?<![\w&/#])#([A-Za-z][\w/-]{0,39})")
+_WIKI = re.compile(r"\[\[([^\]|#\n]{1,120})(?:#[^\]|\n]*)?(?:\|[^\]\n]*)?\]\]")
+_TASK_OPEN = re.compile(r"^\s*[-*+] \[ \]", re.M)
+_TASK_DONE = re.compile(r"^\s*[-*+] \[[xX]\]", re.M)
+_FENCE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.S)
+
+
+def _as_list(value: Any) -> list:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [v for v in re.split(r"[,\s]+", value) if v]
+    return list(value) if isinstance(value, (list, tuple, set)) else [value]
+
+
+def _title_of(text: str) -> str:
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if line:
+            return re.sub(r"^#{1,6}\s+", "", line).strip()[:120]
+    return ""
+
+
+def _inline_tags(text: str) -> list[str]:
+    out = []
+    for t in _TAG.findall(_FENCE.sub(" ", str(text or ""))):
+        if t not in out:
+            out.append(t)
+    return out[:20]
+
+
+def _wikilinks(text: str) -> list[str]:
+    out = []
+    for t in _WIKI.findall(str(text or "")):
+        t = t.strip()
+        if t and t not in out:
+            out.append(t)
+    return out[:40]
+
+
+def _parse_note(raw: str) -> tuple[dict, str]:
+    m = _FM.match(raw or "")
+    if not m:
+        return {}, raw or ""
+    block, body = m.group(1), raw[m.end():]
+    meta: dict = {}
+    try:
+        import yaml  # optional; JSON-valued lines below cover the plugin's own files
+        loaded = yaml.safe_load(block)
+        if isinstance(loaded, dict):
+            meta = {str(k): v for k, v in loaded.items()}
+    except Exception:  # noqa: BLE001
+        for line in block.splitlines():
+            k, sep, v = line.partition(":")
+            if not sep:
+                continue
+            v = v.strip()
+            try:
+                meta[k.strip()] = json.loads(v)
+            except ValueError:
+                meta[k.strip()] = v.strip("'\"")
+    for k, v in list(meta.items()):
+        if isinstance(v, datetime):
+            meta[k] = v.replace(microsecond=0).isoformat()
+        elif hasattr(v, "isoformat") and not isinstance(v, (str, bool)):
+            meta[k] = v.isoformat()
+    return meta, body.lstrip("\n").rstrip()
+
+
+def _dump_note(meta: dict, body: str) -> str:
+    order = ["title", "tags", "pinned", "author", "editedBy", "created", "updated"]
+    keys = [k for k in order if k in meta] + [k for k in meta if k not in order]
+    lines = [f"{k}: {json.dumps(meta[k], ensure_ascii=False)}" for k in keys if meta[k] is not None]
+    return "---\n" + "\n".join(lines) + "\n---\n\n" + (body or "").rstrip() + "\n"
 
 
 class PanelError(ValueError):
@@ -254,63 +334,175 @@ class Panel:
         return self.layout()
 
     # ------------------------------------------------------------ notes
-    def notes(self) -> list[dict]:
-        items = [n for n in self._read("notes.json", []) if isinstance(n, dict) and n.get("id")]
-        pinned = [n for n in items if n.get("pinned")]
-        rest = sorted([n for n in items if not n.get("pinned")], key=lambda n: n.get("updated") or "", reverse=True)
-        return sorted(pinned, key=lambda n: n.get("updated") or "", reverse=True) + rest
+    # A note is a Markdown file, ``notes/<id>.md``, with a small YAML
+    # frontmatter block (title, tags, pinned, author, dates). Obsidian opens
+    # the folder as-is. Older panels kept notes in ``notes.json``; they are
+    # migrated to files on first use and the JSON is kept as a backup.
+    def _notes_dir(self) -> Path:
+        return self.dir / "notes"
 
-    def add_note(self, text: str, author: str) -> dict:
-        text = str(text or "").strip()
-        if not text:
-            raise PanelError("A note needs text.")
+    def _note_path(self, nid: str) -> Path:
+        if not _NOTE_ID.fullmatch(nid or ""):
+            raise PanelError("Invalid note id.")
+        return self._notes_dir() / f"{nid}.md"
+
+    def _migrate_notes(self) -> None:
+        legacy = self.dir / "notes.json"
+        if not legacy.is_file():
+            return
+        items = self._read("notes.json", [])
+        folder = self._notes_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        for n in items if isinstance(items, list) else []:
+            if not isinstance(n, dict) or not _NOTE_ID.fullmatch(str(n.get("id") or "")):
+                continue
+            path = folder / f"{n['id']}.md"
+            if path.exists():
+                continue
+            text = str(n.get("text") or "")
+            meta = {"title": _title_of(text), "tags": _inline_tags(text), "pinned": bool(n.get("pinned")),
+                    "author": n.get("author") or "user", "created": n.get("created") or now(),
+                    "updated": n.get("updated") or now()}
+            if n.get("editedBy"):
+                meta["editedBy"] = n["editedBy"]
+            _atomic_write(path, _dump_note(meta, text))
+        try:
+            os.replace(legacy, self.dir / "notes.json.migrated")
+        except OSError:
+            pass
+
+    def _read_note(self, path: Path, with_body: bool = True) -> Optional[dict]:
+        try:
+            raw = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            return None
+        meta, body = _parse_note(raw)
+        tags = [str(t).lstrip("#") for t in _as_list(meta.get("tags")) if str(t).strip()]
+        for t in _inline_tags(body):
+            if t not in tags:
+                tags.append(t)
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime).replace(microsecond=0).isoformat()
+        except OSError:
+            mtime = now()
+        note = {
+            "id": path.stem,
+            "title": str(meta.get("title") or "").strip() or _title_of(body) or "Untitled",
+            "tags": tags,
+            "pinned": bool(meta.get("pinned")),
+            "author": str(meta.get("author") or "user"),
+            "created": str(meta.get("created") or mtime),
+            "updated": str(meta.get("updated") or mtime),
+            "words": len(body.split()),
+            "links": _wikilinks(body),
+            "tasks": [len(_TASK_OPEN.findall(body)), len(_TASK_DONE.findall(body))],
+        }
+        if meta.get("editedBy"):
+            note["editedBy"] = str(meta["editedBy"])
+        note["text"] = body if with_body or len(body) <= 600 else body[:600]
+        note["partial"] = len(note["text"]) < len(body)
+        return note
+
+    def notes(self, with_body: bool = True) -> list[dict]:
+        if (self.dir / "notes.json").is_file() and self.home.is_dir():
+            with contextlib.suppress(PanelError, PanelBusy, OSError):
+                with self._locked():
+                    self._migrate_notes()
+        folder = self._notes_dir()
+        items = []
+        if folder.is_dir():
+            for path in folder.glob("*.md"):
+                if _NOTE_ID.fullmatch(path.stem):
+                    n = self._read_note(path, with_body)
+                    if n:
+                        items.append(n)
+        pinned = sorted([n for n in items if n["pinned"]], key=lambda n: n["updated"], reverse=True)
+        rest = sorted([n for n in items if not n["pinned"]], key=lambda n: n["updated"], reverse=True)
+        return pinned + rest
+
+    def note(self, nid: str) -> dict:
+        n = self._read_note(self._note_path(nid))
+        if n is None:
+            raise PanelError("Note not found.")
+        return n
+
+    @staticmethod
+    def _clean_text(text: Any) -> str:
+        text = str(text or "").replace("\r\n", "\n").strip("\n")
         if len(text) > MAX_NOTE:
             raise PanelError(f"A note is limited to {MAX_NOTE} characters.")
+        return text
+
+    @staticmethod
+    def _clean_tags(tags: Any) -> list[str]:
+        out = []
+        for t in _as_list(tags):
+            t = re.sub(r"[^\w/-]+", "-", str(t).strip().lstrip("#")).strip("-")[:40]
+            if t and t not in out:
+                out.append(t)
+        return out[:20]
+
+    def add_note(self, text: str, author: str, *, title: Optional[str] = None,
+                 tags: Any = None, pinned: bool = False) -> dict:
+        text = self._clean_text(text)
+        title = " ".join(str(title or "").split())[:120]
+        if not text.strip() and not title:
+            raise PanelError("A note needs a title or text.")
         with self._locked():
-            items = self._read("notes.json", [])
-            if len(items) >= MAX_NOTES:
+            self._migrate_notes()
+            folder = self._notes_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            if sum(1 for _ in folder.glob("*.md")) >= MAX_NOTES:
                 raise PanelError(f"This panel already holds {MAX_NOTES} notes.")
-            note = {"id": secrets.token_hex(4), "text": text, "author": author,
-                    "created": now(), "updated": now(), "pinned": False}
-            items.append(note)
-            self._write("notes.json", items)
-            return note
+            nid = secrets.token_hex(4)
+            while (folder / f"{nid}.md").exists():
+                nid = secrets.token_hex(4)
+            meta = {"title": title or _title_of(text) or "Untitled", "tags": self._clean_tags(tags),
+                    "pinned": bool(pinned), "author": author, "created": now(), "updated": now()}
+            _atomic_write(folder / f"{nid}.md", _dump_note(meta, text))
+        return self.note(nid)
 
     def update_note(self, nid: str, *, text: Optional[str] = None, pinned: Optional[bool] = None,
-                    author: Optional[str] = None) -> dict:
+                    author: Optional[str] = None, title: Optional[str] = None, tags: Any = None) -> dict:
         with self._locked():
-            items = self._read("notes.json", [])
-            note = next((n for n in items if n.get("id") == nid), None)
-            if note is None:
-                raise PanelError("Note not found.")
+            self._migrate_notes()
+            path = self._note_path(nid)
+            try:
+                raw = path.read_text(encoding="utf-8-sig")
+            except FileNotFoundError:
+                raise PanelError("Note not found.") from None
+            meta, body = _parse_note(raw)
             if text is not None:
-                text = str(text).strip()
-                if not text:
-                    raise PanelError("A note needs text.")
-                if len(text) > MAX_NOTE:
-                    raise PanelError(f"A note is limited to {MAX_NOTE} characters.")
-                note["text"] = text
+                body = self._clean_text(text)
                 if author:
-                    note["editedBy"] = author
+                    meta["editedBy"] = author
+            if title is not None:
+                meta["title"] = " ".join(str(title).split())[:120] or _title_of(body) or "Untitled"
+            if tags is not None:
+                meta["tags"] = self._clean_tags(tags)
             if pinned is not None:
-                note["pinned"] = bool(pinned)
-            note["updated"] = now()
-            self._write("notes.json", items)
-            return note
+                meta["pinned"] = bool(pinned)
+            if not body.strip() and not str(meta.get("title") or "").strip():
+                raise PanelError("A note needs a title or text.")
+            meta.setdefault("created", now())
+            meta["updated"] = now()
+            _atomic_write(path, _dump_note(meta, body))
+        return self.note(nid)
 
     def delete_note(self, nid: str) -> bool:
         with self._locked():
-            items = self._read("notes.json", [])
-            keep = [n for n in items if n.get("id") != nid]
-            if len(keep) == len(items):
+            self._migrate_notes()
+            path = self._note_path(nid)
+            try:
+                path.unlink()
+                return True
+            except FileNotFoundError:
                 return False
-            self._write("notes.json", keep)
-            return True
 
     # ------------------------------------------------------------ summary
     def summary(self) -> dict:
         return {
             "layout": self.layout(),
             "widgets": self.widgets(with_html=True),
-            "notes": self.notes(),
+            "notes": self.notes(with_body=False),
         }

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.0
+
+Presentation and polish for the catalog and marketplace page.
+
+- **Brand assets.** Original monochrome banner and icon, committed under
+  `assets/` and shown in the README and the catalog entry's plugin page.
+- **Screenshots.** The Bot pane and settings window, captured with a temporary
+  demo bot so no real profile data is shown.
+- **Less clutter.** The settings, customize and refresh actions share one
+  aligned toolbar; long task and note lists open in their own windows; the
+  notes editor behaves like a markdown file with read and write modes.
+- **Configurable.** Each dashboard's settings window controls appearance,
+  refresh behaviour and card counts; the global settings route is editable
+  from the same window. Native selects follow the desktop theme.
+- **Agent tools.** `bot_panel` gained read/edit actions for tasks, notes,
+  projects, settings and session todos; an in-process bridge keeps it and the
+  REST routes on the same validation and storage code.
+- **Compatibility fixes.** Task statuses, note length and group activity
+  errors reported from the live app are fixed; every profile copy is kept in
+  sync so the installed plugin matches the repository.
+
 ## 1.2.0
 
 Review fixes for the plugin catalog, and no assumptions about one person's setup.

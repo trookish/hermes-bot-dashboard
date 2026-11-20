@@ -2,8 +2,9 @@
 
 Served by the Hermes dashboard web server under ``/api/plugins/bot-dashboard``.
 Reads the shared Hermes root (every profile) and, when the user has set one, a
-markdown notes vault (``vault_path`` setting). The only vault writes are task notes:
-create a task for a bot, or flip one open/done.
+markdown notes vault (``vault_path`` setting). Vault writes are limited to the
+tasks and projects folders: create, edit, or remove (moved to the vault's
+``.trash`` folder, as Obsidian does) a task or project note.
 """
 
 from __future__ import annotations
@@ -173,18 +174,45 @@ def _tasks(bot: str) -> list[dict]:
             "status": str(fields.get("status") or "open"),
             "priority": str(fields.get("priority") or "normal"),
             "due": _day(fields.get("due")),
+            "scheduled": _day(fields.get("scheduled")),
             "completed": _day(fields.get("completedDate")),
+            "created": _day(fields.get("dateCreated")),
+            "modified": _day(fields.get("dateModified")),
+            "tags": _strs(fields.get("tags"), skip={"task"}),
+            "contexts": _strs(fields.get("contexts")),
+            "projects": [_link_name(p) for p in _strs(fields.get("projects"))],
         })
     out.sort(key=lambda t: (t["status"] == "done", t["due"] or "9999", t["title"].lower()))
     return out
 
 
-def _projects(bot: str) -> list[dict]:
+def _strs(value: Any, skip: frozenset | set = frozenset()) -> list[str]:
+    items = value if isinstance(value, list) else ([value] if value not in (None, "") else [])
+    out = []
+    for v in items:
+        t = str(v).strip().lstrip("#")
+        if t and t not in skip and t not in out:
+            out.append(t[:60])
+    return out[:20]
+
+
+def _link_name(value: str) -> str:
+    m = re.match(r"^\[\[([^\]|#]+)", value.strip())
+    return (m.group(1) if m else value).strip()
+
+
+def _excerpt(body: str, n: int = 240) -> str:
+    text = re.sub(r"^#{1,6}\s+.*$", "", body or "", count=1, flags=re.M)
+    text = " ".join(text.split())
+    return text[:n]
+
+
+def _projects(bot: Optional[str]) -> list[dict]:
     out = []
     today = date.today()
     for path in _md_files(bd_settings.projects_dir()):
-        fields, _ = _frontmatter(path)
-        if not _owned(fields, bot):
+        fields, body = _frontmatter(path)
+        if bot is not None and not _owned(fields, bot):
             continue
         updated = _day(fields.get("updated"))
         try:
@@ -199,6 +227,13 @@ def _projects(bot: str) -> list[dict]:
             "ageDays": age,
             "stale": age is not None and age >= STALE_DAYS,
             "repo": str(fields.get("repo") or ""),
+            "file": path.name,
+            "path": str(fields.get("path") or fields.get("dir") or fields.get("directory") or ""),
+            "description": str(fields.get("description") or fields.get("summary") or "")[:300] or _excerpt(body),
+            "tags": _strs(fields.get("tags"), skip={"project"}),
+            "priority": str(fields.get("priority") or ""),
+            "owners": _strs(fields.get(bd_settings.owner_field())),
+            "due": _day(fields.get("due") or fields.get("deadline")),
         })
     out.sort(key=lambda p: (p["status"] != "active", p["name"].lower()))
     return out
@@ -265,8 +300,15 @@ def bot_summary(id: str = Query("", max_length=64)) -> dict:
         "tasks": _safe(lambda: _tasks(bot), []),
         "projects": _safe(lambda: _projects(bot), []),
         "vault": bd_settings.vault_state(),
+        "folders": _folders(),
         "panel": _safe(lambda: Panel(home).summary(), {"layout": None, "widgets": [], "notes": []}),
     }
+
+
+def _folders() -> dict:
+    t, p = bd_settings.tasks_dir(), bd_settings.projects_dir()
+    return {"tasks": str(t) if t else "", "projects": str(p) if p else "",
+            "notes": "panel/notes"}
 
 
 def _mtime(path: Path) -> int:
@@ -297,7 +339,8 @@ def bot_stamp(id: str = Query("", max_length=64)) -> dict:
     files = [home / "profile.yaml", home / "config.yaml", home / "SOUL.md",
              home / "assets" / "avatar.svg", home / "assets" / "avatar.png",
              home / "panel" / "layout.json", home / "panel" / "widgets.json", home / "panel" / "notes.json"]
-    parts = [_mtime(f) for f in files] + [_dir_stamp(bd_settings.tasks_dir()), _dir_stamp(bd_settings.projects_dir())]
+    parts = [_mtime(f) for f in files] + [_dir_stamp(home / "panel" / "notes"),
+                                          _dir_stamp(bd_settings.tasks_dir()), _dir_stamp(bd_settings.projects_dir())]
     return {"stamp": "-".join(str(p) for p in parts)}
 
 
@@ -313,7 +356,9 @@ GROUP_PREFIX = "group:"
 AVATAR_CAP = 400_000
 
 
-def _rooms_query(sql: str, args: tuple = ()) -> list[tuple[Path, list[sqlite3.Row]]]:
+def _rooms_query(sql: str, args: tuple = (), fallback: Optional[str] = None) -> list[tuple[Path, list[sqlite3.Row]]]:
+    """Run one read-only query on every room database. ``fallback`` is tried on
+    a database where ``sql`` fails, e.g. an older install missing a column."""
     out = []
     for db in _room_dbs():
         if not db.is_file():
@@ -324,9 +369,14 @@ def _rooms_query(sql: str, args: tuple = ()) -> list[tuple[Path, list[sqlite3.Ro
             continue
         try:
             con.row_factory = sqlite3.Row
-            out.append((db, con.execute(sql, args).fetchall()))
-        except sqlite3.Error:  # table missing on an older install, or the file is busy
-            pass
+            for q in (sql, fallback):
+                if not q:
+                    continue
+                try:
+                    out.append((db, con.execute(q, args).fetchall()))
+                    break
+                except sqlite3.Error:  # table or column missing on an older install, or the file is busy
+                    continue
         finally:
             con.close()
     return out
@@ -415,42 +465,130 @@ def _member(m: dict) -> dict:
     return out
 
 
-def _events(rid: str, db: Path, limit: int = 8) -> tuple[int, list[dict]]:
+def _jload(raw: Any) -> dict:
+    try:
+        return _dict(json.loads(raw or "{}"))
+    except (TypeError, ValueError):
+        return {}
+
+
+def _clip(text: Any, n: int) -> str:
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= n else t[: n - 1].rstrip() + "…"
+
+
+def _event(r: sqlite3.Row, names: dict[str, str], text_len: int = 280) -> dict:
+    actor = _jload(r["actor_json"])
+    payload = _jload(r["payload_json"]) if "payload_json" in r.keys() else {}
+    kind = str(r["kind"] or "")
+    member = str(payload.get("member_id") or (actor.get("id") if actor.get("kind") == "member" else "") or "")
+    who = names.get(member) or str(actor.get("display_name") or actor.get("handle") or actor.get("profile") or "")
+    akind = str(actor.get("kind") or "")
+    if not who:
+        who = {"user": "You", "system": "Room", "gateway": "Gateway"}.get(akind, akind or "Room")
+    text = payload.get("text") or payload.get("error") or payload.get("reason") or ""
+    if kind == "room.renamed":
+        text = f"Renamed to {payload.get('name') or '?'}"
+    elif kind == "room.activity" and not text:
+        text = str(payload.get("reason_code") or payload.get("status") or "").replace("_", " ")
+    out = {
+        "seq": r["seq"],
+        "kind": kind,
+        "actor": who,
+        "actorKind": akind,
+        "member": member,
+        "at": _num(r["created_at"]),
+        "text": _clip(text, text_len),
+        "thread": str(payload.get("thread_id") or "")[:64],
+    }
+    if kind == "turn.settled" and payload.get("passed"):
+        out["passed"] = True
+    if payload.get("attachments"):
+        out["attachments"] = len(_list(payload.get("attachments")))
+    return out
+
+
+def _room_names(room: Optional[dict]) -> dict[str, str]:
+    names = {}
+    for m in (room or {}).get("members", []):
+        mid = str(m.get("member_id") or _member_profile(m) or "")
+        if mid:
+            names[mid] = str(m.get("display_name") or m.get("handle") or mid)
+    return names
+
+
+def _events(rid: str, db: Path, limit: int = 8, before: Optional[int] = None,
+            room: Optional[dict] = None, text_len: int = 280) -> tuple[int, list[dict]]:
     count, events = 0, []
+    names = _room_names(room)
     for src, rows in _rooms_query("SELECT COUNT(*) AS n FROM hosted_room_events WHERE room_id = ?", (rid,)):
         if src == db and rows:
             count = int(rows[0]["n"] or 0)
-    for src, rows in _rooms_query(
-            "SELECT seq, kind, actor_json, created_at FROM hosted_room_events WHERE room_id = ? ORDER BY seq DESC LIMIT ?",
-            (rid, limit)):
+    if limit <= 0:
+        return count, events
+    sql = ("SELECT seq, kind, actor_json, payload_json, created_at FROM hosted_room_events WHERE room_id = ?"
+           + (" AND seq < ?" if before else "") + " ORDER BY seq DESC LIMIT ?")
+    args = (rid, int(before), limit) if before else (rid, limit)
+    for src, rows in _rooms_query(sql, args, sql.replace("payload_json, ", "")):
         if src != db:
             continue
         for r in rows:
-            try:
-                actor = _dict(json.loads(r["actor_json"] or "{}"))
-            except (TypeError, ValueError):
-                actor = {}
-            events.append({
-                "seq": r["seq"],
-                "kind": str(r["kind"] or ""),
-                "actor": str(actor.get("display_name") or actor.get("handle") or actor.get("profile") or actor.get("kind") or ""),
-                "at": _num(r["created_at"]),
-            })
+            events.append(_safe(lambda r=r: _event(r, names, text_len),
+                                {"seq": r["seq"], "kind": str(r["kind"] or ""), "actor": "", "at": _num(r["created_at"])}))
     return count, events
 
 
-def _room_live(rid: str, db: Path) -> dict:
-    """Whether a gateway currently drives the room, and how much work is queued."""
+ACTIVE_TURNS = ("queued", "running", "deferred", "stopping")
+
+
+def _turn_topic(prompt: str) -> str:
+    """The newest message a member was asked to answer, from its turn prompt."""
+    lines = [ln.strip() for ln in str(prompt or "").splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        m = re.match(r"^(User \(user\)|@[\w-]+):\s*(.+)$", ln)
+        if m:
+            who = "You" if m.group(1).startswith("User") else m.group(1)
+            return _clip(f"{who}: {m.group(2)}", 160)
+    return ""
+
+
+def _room_live(rid: str, db: Path, room: Optional[dict] = None) -> dict:
+    """Whether a gateway drives the room, which members have a turn in flight,
+    and what each member did last."""
     now = time.time()
-    live, running = False, 0
+    live, active, last = False, [], {}
     for src, rows in _rooms_query("SELECT expires_at, released_at FROM hosted_room_driver_leases WHERE room_id = ?", (rid,)):
         if src == db:
             live = any((_num(r["expires_at"]) or 0) > now and not r["released_at"] for r in rows)
     for src, rows in _rooms_query(
-            "SELECT COUNT(*) AS n FROM hosted_room_driver_tasks WHERE room_id = ? AND terminal_at IS NULL", (rid,)):
-        if src == db and rows:
-            running = int(rows[0]["n"] or 0)
-    return {"live": live, "running": running}
+            "SELECT task_id, thread_id, status, payload_json, created_at, started_at, updated_at, terminal_at, result_json "
+            "FROM hosted_room_driver_tasks WHERE room_id = ? ORDER BY created_at DESC LIMIT 200", (rid,),
+            "SELECT NULL AS task_id, NULL AS thread_id, 'running' AS status, NULL AS payload_json, NULL AS created_at, "
+            "NULL AS started_at, NULL AS updated_at, terminal_at, NULL AS result_json "
+            "FROM hosted_room_driver_tasks WHERE room_id = ?"):
+        if src != db:
+            continue
+        for r in rows:
+            payload = _jload(r["payload_json"])
+            member = str(payload.get("target_member_id") or payload.get("target_profile") or "")
+            status = str(r["status"] or "")
+            if status in ACTIVE_TURNS and r["terminal_at"] is None:
+                active.append({
+                    "member": member,
+                    "profile": str(payload.get("target_profile") or member),
+                    "status": status,
+                    "since": _num(r["started_at"]) or _num(r["created_at"]),
+                    "topic": _turn_topic(payload.get("prompt")),
+                    "thread": str(r["thread_id"] or "")[:64],
+                })
+            elif member and member not in last:
+                result = _jload(r["result_json"])
+                last[member] = {
+                    "status": status,
+                    "at": _num(r["terminal_at"]) or _num(r["updated_at"]),
+                    "text": _clip(result.get("text") or result.get("error") or "", 160),
+                }
+    return {"live": live, "running": len(active), "active": active, "last": last}
 
 
 def _group_tasks(ids: list[str]) -> list[dict]:
@@ -477,18 +615,24 @@ def groups_list() -> dict:
 
 def _resolve_room(key: str) -> tuple[str, Optional[dict]]:
     """Desktop owner keys look like ``group:id:<roomId>`` or, for rooms made
-    before room ids, ``group:name:<name>``; a bare room id also works."""
-    k = key[len(GROUP_PREFIX):] if key.startswith(GROUP_PREFIX) else key
+    before room ids, ``group:name:<name>``; a bare room id or a room's name
+    (what a bot usually passes) also works."""
+    k = str(key or "").strip()
+    k = k[len(GROUP_PREFIX):] if k.startswith(GROUP_PREFIX) else k
     rooms = _safe(_rooms, {})
-    if k.startswith("name:"):
-        name = k[5:].strip().lower()
+
+    def by_name(name: str):
+        name = name.strip().lower()
         hits = [r for r in rooms.values() if r["name"].strip().lower() == name and not r["disbandedAt"]]
         hits = hits or [r for r in rooms.values() if r["name"].strip().lower() == name]
-        return (hits[0]["id"], hits[0]) if hits else (k, None)
+        return (hits[0]["id"], hits[0]) if hits else None
+
+    if k.startswith("name:"):
+        return by_name(k[5:]) or (k, None)
     rid = k[3:] if k.startswith("id:") else k
-    if not ROOM_ID.fullmatch(rid or ""):
-        return rid, None
-    return rid, rooms.get(rid)
+    if ROOM_ID.fullmatch(rid or "") and rid in rooms:
+        return rid, rooms[rid]
+    return by_name(k) or (rid, None)
 
 
 @router.get("/group")
@@ -499,7 +643,20 @@ def group_summary(id: str = Query("", max_length=200)) -> dict:
                 "reason": "deleted" if rid else "invalid"}
     members = [_safe(lambda m=m: _member(m), {"id": "?", "name": "Unknown member", "missing": True}) for m in room["members"][:40]]
     local = [m["id"] for m in members if not m.get("missing") and not m.get("remote")]
-    count, events = _safe(lambda: _events(rid, room["db"]), (0, []))
+    count, events = _safe(lambda: _events(rid, room["db"], 12, room=room, text_len=200), (0, []))
+    live = _safe(lambda: _room_live(rid, room["db"], room), {"live": False, "running": 0, "active": [], "last": {}})
+    mids = {_member_profile(raw) or "hermes": str(raw.get("member_id") or "") for raw in room["members"][:40]}
+    for m in members:
+        keys = {m.get("id"), mids.get(m.get("id"), "")} - {""}
+        turn = next((a for a in live["active"] if a["member"] in keys or a["profile"] in keys), None)
+        done = next((live["last"][k] for k in keys if k in live["last"]), None)
+        m["state"] = ("missing" if m.get("missing") else "remote" if m.get("remote")
+                      else turn["status"] if turn else "idle")
+        if turn:
+            m["doing"] = turn["topic"] or "Working on a turn"
+            m["since"] = turn["since"]
+        if done:
+            m["lastStatus"], m["lastAt"], m["lastText"] = done["status"], done["at"], done["text"]
     projects, seen = [], set()
     for pid in local:
         for p in _safe(lambda pid=pid: _projects(pid), []):
@@ -520,12 +677,28 @@ def group_summary(id: str = Query("", max_length=200)) -> dict:
         "disbandedAt": room["disbandedAt"],
         "eventCount": count,
         "events": events,
-        **_safe(lambda: _room_live(rid, room["db"]), {"live": False, "running": 0}),
+        "live": live["live"],
+        "running": live["running"],
+        "active": live["active"],
         "tasks": _group_tasks(local),
         "projects": projects,
         "vault": bd_settings.vault_state(),
+        "folders": _folders(),
         "panel": _safe(lambda: Panel(home, create_home=True, builtin=GROUP_BUILTIN).summary(), {"layout": None, "widgets": [], "notes": []}),
     }
+
+
+@router.get("/group/activity")
+def group_activity(id: str = Query("", max_length=200), limit: int = Query(60, ge=1, le=200),
+                   before: Optional[int] = Query(None, ge=1)) -> dict:
+    """A page of room events, newest first, for the activity window."""
+    rid, room = _resolve_room(id)
+    if room is None:
+        raise HTTPException(404, "This group no longer exists. It was deleted or disbanded.")
+    count, events = _safe(lambda: _events(rid, room["db"], limit, before, room, 1200), (0, []))
+    live = _safe(lambda: _room_live(rid, room["db"], room), {"live": False, "running": 0, "active": [], "last": {}})
+    return {"count": count, "events": events, "active": live["active"], "live": live["live"],
+            "more": bool(events) and (events[-1].get("seq") or 0) > 1}
 
 
 @router.get("/group/stamp")
@@ -543,8 +716,18 @@ def group_stamp(id: str = Query("", max_length=200)) -> dict:
     parts = [room["updatedAt"], room["revision"], room["disbandedAt"], count,
              *[_mtime(h / "profile.yaml") if h else "x" for h in homes],
              *[_mtime(_group_home(rid) / "panel" / f) for f in ("layout.json", "widgets.json", "notes.json")],
+             _dir_stamp(_group_home(rid) / "panel" / "notes"), _safe(lambda: _turn_stamp(rid, room["db"]), 0),
              _dir_stamp(bd_settings.tasks_dir()), _dir_stamp(bd_settings.projects_dir())]
     return {"stamp": "-".join(str(p) for p in parts)}
+
+
+def _turn_stamp(rid: str, db: Path) -> str:
+    for src, rows in _rooms_query(
+            "SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM hosted_room_driver_tasks WHERE room_id = ?", (rid,),
+            "SELECT COUNT(*) AS n, MAX(terminal_at) AS u FROM hosted_room_driver_tasks WHERE room_id = ?"):
+        if src == db and rows:
+            return f"{rows[0]['n']}.{rows[0]['u']}"
+    return "0"
 
 
 def _panel(bot: str) -> Panel:
@@ -581,17 +764,31 @@ class NoteBody(BaseModel):
     id: Optional[str] = None
     text: Optional[str] = None
     pinned: Optional[bool] = None
+    title: Optional[str] = None
+    tags: Optional[list[str]] = None
+
+
+@router.get("/panel/notes")
+def panel_notes(bot: str = Query("", max_length=200)) -> dict:
+    """Every note with its full Markdown body, for the notes window."""
+    return {"notes": _guard(lambda: _panel(bot).notes())}
+
+
+@router.get("/panel/note")
+def panel_note_get(bot: str = Query("", max_length=200), id: str = Query("", max_length=40)) -> dict:
+    return {"note": _guard(lambda: _panel(bot).note(id))}
 
 
 @router.post("/panel/note")
 def panel_note_add(body: NoteBody) -> dict:
-    return {"ok": True, "note": _guard(lambda: _panel(body.bot).add_note(body.text or "", author="user"))}
+    return {"ok": True, "note": _guard(lambda: _panel(body.bot).add_note(
+        body.text or "", author="user", title=body.title, tags=body.tags, pinned=bool(body.pinned)))}
 
 
 @router.post("/panel/note/update")
 def panel_note_update(body: NoteBody) -> dict:
     return {"ok": True, "note": _guard(lambda: _panel(body.bot).update_note(
-        body.id or "", text=body.text, pinned=body.pinned, author="user"))}
+        body.id or "", text=body.text, pinned=body.pinned, author="user", title=body.title, tags=body.tags))}
 
 
 @router.post("/panel/note/delete")
@@ -649,29 +846,107 @@ def _task_filename(title: str, folder: Path) -> Path:
 _RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 
 
-def create_task(title: str, owner: str, due: Optional[str] = None) -> Path:
-    """Write one task note with TaskNotes-compatible frontmatter into the tasks folder."""
-    folder = _vault_dir(bd_settings.tasks_dir())
+def _now() -> str:
+    return datetime.now().replace(microsecond=0).isoformat()
+
+
+def _vault_root() -> Path:
     root = bd_settings.vault()
     if root is None or not root.is_dir():
         raise HTTPException(409, "The notes vault folder was not found. Check vault_path in the plugin settings.")
+    return root
+
+
+def _note_in(folder: Optional[Path], name: str, label: str) -> Path:
+    folder = _vault_dir(folder)
+    path = (folder / str(name or "")).resolve()
+    if path.parent != folder.resolve() or path.suffix != ".md" or not path.is_file():
+        raise HTTPException(404, f"{label} not found.")
+    return path
+
+
+def _fm_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    return json.dumps(value, ensure_ascii=False)  # JSON scalars and lists are valid YAML
+
+
+def _set_fields(text: str, updates: dict) -> str:
+    """Rewrite only the named frontmatter keys; every other line stays as written."""
+    m = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.S)
+    if not m:
+        raise HTTPException(422, "The note has no frontmatter.")
+    lines = m.group(1).splitlines()
+    for key, value in updates.items():
+        new = f"{key}: {_fm_value(value)}"
+        idx = next((i for i, ln in enumerate(lines) if re.match(rf"^{re.escape(key)}\s*:", ln)), None)
+        if idx is None:
+            lines.append(new)
+            continue
+        end = idx + 1
+        while end < len(lines) and re.match(r"^(\s+\S|\s*-\s)", lines[end]):
+            end += 1  # an indented block list or mapping under the key
+        lines[idx:end] = [new]
+    return "---\n" + "\n".join(lines) + "\n---" + text[m.end():]
+
+
+def _write(path: Path, text: str) -> None:
+    tmp = path.with_suffix(".md.tmp")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+
+
+def _trash(path: Path) -> str:
+    """Move a vault note to <vault>/.trash, the folder Obsidian itself uses."""
+    trash = _vault_root() / ".trash"
+    trash.mkdir(exist_ok=True)
+    dest = trash / path.name
+    while dest.exists():
+        dest = trash / f"{path.stem} {secrets.token_hex(2)}.md"
+    os.replace(path, dest)
+    return dest.name
+
+
+def _tag_list(tags: Optional[list[str]], base: str) -> list[str]:
+    out = [base]
+    for t in tags or []:
+        t = re.sub(r"[^\w/-]+", "-", str(t).strip().lstrip("#")).strip("-")[:40]
+        if t and t not in out:
+            out.append(t)
+    return out[:20]
+
+
+DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+PRIORITIES = ("low", "normal", "high", "urgent")
+TASK_STATUSES = ("open", "in-progress", "waiting", "done", "cancelled")
+
+
+def _due(value: Optional[str]) -> Optional[str]:
+    return value if value and DAY.match(value) else None
+
+
+def create_task(title: str, owner: str, due: Optional[str] = None, priority: str = "normal",
+                tags: Optional[list[str]] = None, project: Optional[str] = None) -> Path:
+    """Write one task note with TaskNotes-compatible frontmatter into the tasks folder."""
+    folder = _vault_dir(bd_settings.tasks_dir())
+    _vault_root()
     folder.mkdir(parents=True, exist_ok=True)
-    now = datetime.now().replace(microsecond=0).isoformat()
+    now = _now()
     fields = {
         "title": title,
         "status": "open",
-        "priority": "normal",
+        "priority": priority if priority in PRIORITIES else "normal",
         "due": due,
-        "tags": ["task"],
+        "tags": _tag_list(tags, "task"),
         bd_settings.owner_field(): owner,
         "dateCreated": now,
         "dateModified": now,
     }
+    if project:
+        fields["projects"] = [f"[[{project}]]"]
     path = _task_filename(title, folder)
     body = yaml.safe_dump(fields, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    tmp = path.with_suffix(".md.tmp")
-    tmp.write_text(f"---\n{body}---\n\n# {title}\n", encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+    _write(path, f"---\n{body}---\n\n# {title}\n")
     return path
 
 
@@ -679,6 +954,9 @@ class NewTask(BaseModel):
     bot: str
     title: str
     due: Optional[str] = None
+    priority: Optional[str] = None
+    tags: Optional[list[str]] = None
+    project: Optional[str] = None
 
 
 @router.post("/task")
@@ -688,8 +966,9 @@ def add_task(body: NewTask) -> dict:
     title = " ".join(body.title.split())[:200]
     if not title:
         raise HTTPException(400, "A task needs a title.")
-    due = body.due if body.due and re.match(r"^\d{4}-\d{2}-\d{2}$", body.due) else None
-    path = create_task(title, bot, due=due)
+    project = " ".join(str(body.project or "").split())[:120] or None
+    path = create_task(title, bot, due=_due(body.due), priority=body.priority or "normal",
+                       tags=body.tags, project=project)
     return {"ok": True, "file": path.name}
 
 
@@ -700,27 +979,337 @@ class TaskStatus(BaseModel):
 
 @router.post("/task/status")
 def set_task_status(body: TaskStatus) -> dict:
-    if body.status not in ("open", "in-progress", "done"):
+    if body.status not in TASK_STATUSES:
         raise HTTPException(400, "Unknown status.")
-    folder = _vault_dir(bd_settings.tasks_dir())
-    path = (folder / body.file).resolve()
-    if path.parent != folder.resolve() or path.suffix != ".md" or not path.is_file():
-        raise HTTPException(404, "Task not found.")
-    text = path.read_text(encoding="utf-8")
-    m = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.S)
-    if not m:
-        raise HTTPException(422, "Task has no frontmatter.")
-    fm = m.group(1)
-    now = datetime.now().replace(microsecond=0).isoformat()
-    fm = re.sub(r'^status:.*$', f'status: "{body.status}"', fm, count=1, flags=re.M)
-    completed = f'completedDate: "{now}"' if body.status == "done" else "completedDate: null"
-    if re.search(r"^completedDate:", fm, re.M):
-        fm = re.sub(r"^completedDate:.*$", completed, fm, count=1, flags=re.M)
-    elif body.status == "done":
-        fm += "\n" + completed
-    if re.search(r"^dateModified:", fm, re.M):
-        fm = re.sub(r"^dateModified:.*$", f'dateModified: "{now}"', fm, count=1, flags=re.M)
-    tmp = path.with_suffix(".md.tmp")
-    tmp.write_text("---\n" + fm + "\n---" + text[m.end():], encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+    path = _note_in(bd_settings.tasks_dir(), body.file, "Task")
+    now = _now()
+    updates: dict = {"status": body.status, "dateModified": now}
+    updates["completedDate"] = now if body.status == "done" else None
+    _write(path, _set_fields(path.read_text(encoding="utf-8"), updates))
     return {"ok": True}
+
+
+class TaskEdit(BaseModel):
+    file: str
+    title: Optional[str] = None
+    due: Optional[str] = None
+    priority: Optional[str] = None
+    tags: Optional[list[str]] = None
+    owner: Optional[str] = None
+
+
+@router.post("/task/update")
+def update_task(body: TaskEdit) -> dict:
+    path = _note_in(bd_settings.tasks_dir(), body.file, "Task")
+    updates: dict = {"dateModified": _now()}
+    if body.title is not None:
+        title = " ".join(body.title.split())[:200]
+        if not title:
+            raise HTTPException(400, "A task needs a title.")
+        updates["title"] = title
+    if body.due is not None:
+        updates["due"] = _due(body.due)
+    if body.priority is not None:
+        if body.priority not in PRIORITIES:
+            raise HTTPException(400, "Unknown priority.")
+        updates["priority"] = body.priority
+    if body.tags is not None:
+        updates["tags"] = _tag_list(body.tags, "task")
+    if body.owner is not None:
+        _bot_home(body.owner)
+        updates[bd_settings.owner_field()] = _norm_bot(body.owner)
+    _write(path, _set_fields(path.read_text(encoding="utf-8"), updates))
+    return {"ok": True}
+
+
+class NoteFile(BaseModel):
+    file: str
+
+
+@router.post("/task/delete")
+def delete_task(body: NoteFile) -> dict:
+    return {"ok": True, "trashed": _trash(_note_in(bd_settings.tasks_dir(), body.file, "Task"))}
+
+
+# ---------------------------------------------------------------- projects
+
+PROJECT_STATUSES = ("idea", "planning", "active", "paused", "blocked", "done", "archived")
+
+
+class ProjectBody(BaseModel):
+    bot: Optional[str] = None
+    file: Optional[str] = None
+    name: Optional[str] = None
+    status: Optional[str] = None
+    next: Optional[str] = None
+    repo: Optional[str] = None
+    path: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[list[str]] = None
+    priority: Optional[str] = None
+    due: Optional[str] = None
+    owners: Optional[list[str]] = None
+
+
+def _project_fields(body: ProjectBody) -> dict:
+    out: dict = {}
+    if body.status is not None:
+        status = body.status.strip().lower()
+        if status not in PROJECT_STATUSES:
+            raise HTTPException(400, "Unknown project status.")
+        out["status"] = status
+    for key in ("next", "repo", "path", "description"):
+        val = getattr(body, key)
+        if val is not None:
+            out[key] = " ".join(val.split())[:400] if key != "path" else val.strip()[:400]
+    if body.tags is not None:
+        out["tags"] = _tag_list(body.tags, "project")
+    if body.priority is not None:
+        if body.priority and body.priority not in PRIORITIES:
+            raise HTTPException(400, "Unknown priority.")
+        out["priority"] = body.priority or None
+    if body.due is not None:
+        out["due"] = _due(body.due)
+    if body.owners is not None:
+        owners = []
+        for o in body.owners:
+            _bot_home(o)
+            owners.append(_norm_bot(o))
+        out[bd_settings.owner_field()] = owners
+    return out
+
+
+def _project_name(name: Optional[str]) -> str:
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f\[\]#^]', " ", str(name or ""))
+    stem = " ".join(stem.split()).strip(". ")[:80]
+    if not stem:
+        raise HTTPException(400, "A project needs a name.")
+    if stem.lower() in _RESERVED:
+        stem = f"{stem} project"
+    return stem
+
+
+@router.get("/projects")
+def projects_list(bot: str = Query("", max_length=64), all: bool = Query(False)) -> dict:
+    return {"projects": _safe(lambda: _projects(None if all else _norm_bot(bot)), []),
+            "folder": _folders()["projects"], "vault": bd_settings.vault_state()}
+
+
+@router.post("/project")
+def add_project(body: ProjectBody) -> dict:
+    folder = _vault_dir(bd_settings.projects_dir())
+    _vault_root()
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = _project_name(body.name)
+    path = folder / f"{stem}.md"
+    if path.exists():
+        raise HTTPException(409, f"A project named {stem} already exists.")
+    owner = _norm_bot(body.bot or "")
+    _bot_home(body.bot or "")
+    now = _now()
+    fields = {"title": stem, "status": "active", "tags": ["project"], bd_settings.owner_field(): owner,
+              "next": "", "repo": "", "path": "", "updated": now[:10], "created": now[:10]}
+    fields.update(_project_fields(body))
+    if body.owners is None:
+        fields[bd_settings.owner_field()] = owner
+    head = yaml.safe_dump({k: v for k, v in fields.items() if v not in (None,)}, sort_keys=False,
+                          allow_unicode=True, default_flow_style=False)
+    desc = fields.get("description") or ""
+    _write(path, f"---\n{head}---\n\n# {stem}\n\n{desc}\n\n## Next\n\n- [ ] {fields.get('next') or ''}\n".rstrip() + "\n")
+    return {"ok": True, "file": path.name}
+
+
+@router.post("/project/update")
+def update_project(body: ProjectBody) -> dict:
+    path = _note_in(bd_settings.projects_dir(), body.file or "", "Project")
+    updates = _project_fields(body)
+    updates["updated"] = _now()[:10]
+    text = _set_fields(path.read_text(encoding="utf-8"), updates)
+    dest = path
+    if body.name is not None and _project_name(body.name) != path.stem:
+        stem = _project_name(body.name)
+        dest = path.with_name(f"{stem}.md")
+        if dest.exists():
+            raise HTTPException(409, f"A project named {stem} already exists.")
+        text = _set_fields(text, {"title": stem})
+    _write(path, text)
+    if dest != path:
+        os.replace(path, dest)
+    return {"ok": True, "file": dest.name}
+
+
+@router.post("/project/delete")
+def delete_project(body: NoteFile) -> dict:
+    return {"ok": True, "trashed": _trash(_note_in(bd_settings.projects_dir(), body.file, "Project"))}
+
+
+
+# ---------------------------------------------------------------- session todo lists
+
+TODO_STATUSES = ("pending", "in_progress", "completed", "cancelled")
+
+
+def _todo_items(content: Any) -> list[dict]:
+    try:
+        data = json.loads(content) if isinstance(content, str) else content
+    except (TypeError, ValueError):
+        return []
+    items = data.get("todos") if isinstance(data, dict) else data
+    out = []
+    for t in _list(items)[:100]:
+        if not isinstance(t, dict):
+            continue
+        text = " ".join(str(t.get("content") or "").split())[:400]
+        if not text:
+            continue
+        status = str(t.get("status") or "pending").strip().lower()
+        out.append({"id": str(t.get("id") or "")[:80], "content": text,
+                    "status": status if status in TODO_STATUSES else "pending"})
+    return out
+
+
+def _session_todos(bot: str, session: str, past: int) -> dict:
+    db = _bot_home(bot) / "state.db"
+    if not db.is_file():
+        return {"current": None, "past": []}
+    con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=2)
+    try:
+        def latest(sid: str):
+            # Indexed by session; a full scan of a large state.db takes seconds.
+            return con.execute(
+                "SELECT content, timestamp FROM messages WHERE session_id = ? AND role = 'tool' "
+                "AND tool_name = 'todo_list' ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+
+        current = None
+        if session:
+            row = latest(session)
+            current = {"session": session, "at": row[1] if row else None,
+                       "todos": _todo_items(row[0]) if row else []}
+        hist: list[dict] = []
+        if past:
+            rows = con.execute(
+                "SELECT id, title, COALESCE(last_activity_at, started_at) AS at FROM sessions "
+                "WHERE COALESCE(archived, 0) = 0 ORDER BY at DESC LIMIT 60").fetchall()
+            for sid, title, at in rows:
+                if sid == session:
+                    continue
+                row = latest(sid)
+                items = _todo_items(row[0]) if row else []
+                if items:
+                    hist.append({"session": sid, "title": str(title or "Untitled chat")[:120],
+                                 "at": row[1] or at, "todos": items})
+                if len(hist) >= past:
+                    break
+        return {"current": current, "past": hist}
+    finally:
+        con.close()
+
+
+@router.get("/session/todos")
+def session_todos(bot: str = Query("", max_length=64), session: str = Query("", max_length=200),
+                  past: int = Query(0, ge=0, le=30)) -> dict:
+    """The focused chat's todo list, and the lists left in recent chats of this bot."""
+    return _safe(lambda: _session_todos(_norm_bot(bot), session.strip(), past), {"current": None, "past": []})
+
+
+# ---------------------------------------------------------------- plugin settings
+
+SETTING_KEYS = ("vault_path", "tasks_folder", "projects_folder", "owner_field", "panel_rule")
+
+
+def _settings_path() -> Path:
+    return bd_settings.hermes_root() / "config.yaml"
+
+
+@router.get("/settings")
+def settings_get() -> dict:
+    """The five Bot Dashboard settings, with their live values and env overrides."""
+    def read():
+        values = {k: bd_settings.setting(k) for k in SETTING_KEYS}
+        env = {k: k.upper() in os.environ or ("BOT_DASHBOARD_" + k.upper()) in os.environ
+               for k in SETTING_KEYS}
+        vault = bd_settings.vault()
+        return {
+            "settings": values,
+            "defaults": dict(bd_settings.DEFAULTS),
+            "envOverrides": env,
+            "vaultFound": bool(vault and vault.is_dir()),
+            "vaultState": bd_settings.vault_state(),
+            "path": str(_settings_path())
+        }
+    return _safe(read, {"settings": {k: bd_settings.DEFAULTS[k] for k in SETTING_KEYS},
+                        "defaults": dict(bd_settings.DEFAULTS), "envOverrides": {},
+                        "vaultFound": False, "vaultState": {}, "path": ""})
+
+
+class SettingsBody(BaseModel):
+    settings: dict[str, str]
+
+
+def _settings_block_lines(text: str) -> tuple[int, int, int] | None:
+    """Locate plugins.entries.bot-dashboard.settings in config.yaml by line
+    number, so a save touches only those lines and leaves tokens intact.
+    Returns (start_line, end_line_exclusive, indent)."""
+    try:
+        node = yaml.compose(text)
+    except yaml.YAMLError:
+        return None
+    def child(mapping, name):
+        if not isinstance(mapping, yaml.MappingNode):
+            return None
+        for k, v in mapping.value:
+            if getattr(k, "value", "") == name:
+                return v
+        return None
+    try:
+        settings = child(child(child(child(node, "plugins"), "entries"), "bot-dashboard"), "settings")
+    except Exception:
+        return None
+    if settings is None or not isinstance(settings, yaml.MappingNode) or not settings.value:
+        return None
+    start = min(k.start_mark.line for k, _ in settings.value)
+    end = max(v.end_mark.line for _, v in settings.value) + 1
+    indent = settings.value[0][0].start_mark.column
+    return start, end, indent
+
+
+@router.post("/settings")
+def settings_save(body: SettingsBody) -> dict:
+    """Replace only the five allowlisted keys inside
+    plugins.entries.bot-dashboard.settings. The rest of config.yaml — including
+    tokens, comments and every other plugin — is never rewritten."""
+    updates = body.settings if isinstance(body.settings, dict) else {}
+    for key, value in updates.items():
+        if key not in SETTING_KEYS:
+            raise HTTPException(400, f"Unknown setting: {key}")
+        if not isinstance(value, str) or len(value) > 1000:
+            raise HTTPException(400, f"Invalid value for {key}.")
+        if key in ("vault_path", "tasks_folder", "projects_folder") and "\x00" in value:
+            raise HTTPException(400, f"Invalid path for {key}.")
+
+    path = _settings_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    block = _settings_block_lines(text)
+    merged = {k: bd_settings.setting(k) for k in SETTING_KEYS}
+    merged.update({k: v.strip() for k, v in updates.items()})
+    payload = yaml.safe_dump(merged, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    indented = "".join(" " * block[2] + line + "\n" for line in payload.splitlines()) if block else ""
+    lines = text.splitlines(keepends=True)
+    if block and block[1] <= len(lines):
+        lines[block[0]:block[1]] = [indented]
+    else:
+        # No settings block yet: append one under plugins.entries.bot-dashboard.
+        lines.append("plugins:\n  entries:\n    bot-dashboard:\n      settings:\n" + indented)
+    text = "".join(lines)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".yaml.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="")
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise HTTPException(503, f"Could not save the settings: {exc}") from exc
+    # The settings cache keys on mtime; a fresh write invalidates it.
+    return {"ok": True, "settings": {k: bd_settings.setting(k) for k in SETTING_KEYS}}

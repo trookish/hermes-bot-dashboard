@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 120 120" role="img" aria-labelledby="t">
+  <title id="t">Bot Dashboard — two panes, one workspace</title>
+  <defs>
+    <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M30 0H0V30" fill="none" stroke="#292D2D" stroke-width="1"/>
+    </pattern>
+    <radialGradient id="vig" cx="50%" cy="45%" r="72%">
+      <stop offset="0" stop-color="#171A1B" stop-opacity="0"/>
+      <stop offset="1" stop-color="#0A0C0D" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="120" height="120" fill="#171A1B"/>
+  <rect width="120" height="120" fill="url(#grid)"/>
+  <rect width="120" height="120" fill="url(#vig)"/>
+
+  <path d="M60 9 L109 38 V82 L60 111 L11 82 V38 Z"
+        fill="#F4F4F5" stroke="#F4F4F5" stroke-width="1.5" stroke-linejoin="round"/>
+
+  <path d="M60 19 L100 43 V77 L60 101 L20 77 V43 Z"
+        fill="none" stroke="#C9CDD0" stroke-width="1" stroke-linejoin="round" opacity="0.55"/>
+
+  <rect x="34" y="45" width="21" height="41" rx="5.5" fill="#171A1B"/>
+  <rect x="65" y="45" width="21" height="41" rx="5.5" fill="#171A1B"/>
+
+  <circle cx="44.5" cy="62" r="4.4" fill="#F4F4F5"/>
+  <circle cx="75.5" cy="62" r="4.4" fill="#F4F4F5"/>
+
+  <path d="M49 94 Q60 103 71 94" fill="none" stroke="#171A1B"
+        stroke-width="3.2" stroke-linecap="round"/>
+</svg>

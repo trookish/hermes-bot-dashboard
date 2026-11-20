@@ -37,38 +37,61 @@ SCHEMA = {
     "description": (
         "Read or edit YOUR OWN Bot Panel: the dashboard the user sees beside your chat in the Hermes "
         "desktop app (tab 'Bot', next to Scheduled jobs). Built-in cards: profile, scheduled jobs, "
-        "tasks, notes, projects. You can add custom widgets (self-contained HTML, rendered in a "
-        "sandboxed frame about 320px wide that scales wider content down to fit; theme with the CSS "
-        "variables --foreground, --muted-foreground, --border, --accent, --card; network access is "
-        "blocked, so inline every image, style and script), and read or write shared notes. Use it "
-        "when the user asks to add, change or remove "
-        "something in your panel, to pin a useful view (plan, tracker, grid) there, or to leave them "
-        "a note. Actions: view, add_widget, update_widget, remove_widget, list_notes, add_note, "
-        "update_note, delete_note, set_layout."
+        "tasks, notes, projects. This tool does everything the dashboard does: read/write Markdown "
+        "notes, add custom self-contained HTML widgets (sandboxed, themed with --foreground, "
+        "--muted-foreground, --border, --accent, --card; no network), manage task notes and project "
+        "notes, read the focused chat's todo list, and read or change the plugin's five settings. "
+        "Use it when the user asks to add, change or remove anything in your panel, to pin a useful "
+        "view, to plan work as tasks, or to leave them a note. Actions: view, add_widget, "
+        "update_widget, remove_widget, set_layout, list_notes, get_note, add_note, update_note, "
+        "delete_note, list_tasks, add_task, update_task, set_task_status, delete_task, "
+        "list_projects, add_project, update_project, delete_project, get_settings, set_settings, "
+        "session_todos."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["view", "add_widget", "update_widget", "remove_widget", "list_notes",
-                         "add_note", "update_note", "delete_note", "set_layout"],
+                "enum": ["view", "add_widget", "update_widget", "remove_widget", "set_layout",
+                         "list_notes", "get_note", "add_note", "update_note", "delete_note",
+                         "list_tasks", "add_task", "update_task", "set_task_status", "delete_task",
+                         "list_projects", "add_project", "update_project", "delete_project",
+                         "get_settings", "set_settings", "session_todos"],
             },
             "widget_id": {"type": "string", "description": "Widget id (update_widget, remove_widget)."},
             "title": {"type": "string", "description": "Widget title (add_widget, update_widget)."},
             "html": {"type": "string", "description": "Full self-contained HTML for the widget body."},
             "html_file": {"type": "string", "description": "Path to an existing .html file to use instead of html."},
             "height": {"type": "integer", "description": "Optional fixed height in px; omit to auto-size."},
-            "note_id": {"type": "string", "description": "Note id (update_note, delete_note)."},
-            "text": {"type": "string", "description": "Note text, plain text; line breaks are kept (add_note, update_note)."},
+            "note_id": {"type": "string", "description": "Note id (get_note, update_note, delete_note)."},
+            "text": {"type": "string", "description": "Note body or new item text."},
+            "note_title": {"type": "string", "description": "Note title (add_note, update_note); defaults to the first heading. 'title' is for widget titles."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags without # (notes, tasks, projects)."},
             "pinned": {"type": "boolean", "description": "Pin or unpin a note (update_note)."},
             "order": {"type": "array", "items": {"type": "string"},
                       "description": "Card order (set_layout). Ids: profile, jobs, tasks, notes, projects, w:<widget_id>."},
             "hidden": {"type": "array", "items": {"type": "string"}, "description": "Card ids to hide (set_layout)."},
+            "file": {"type": "string", "description": "Task or project note filename, from list_tasks/list_projects (update/delete)."},
+            "status": {"type": "string", "description": "Task status (set_task_status): open, in-progress, waiting, done, cancelled."},
+            "due": {"type": "string", "description": "Due date, YYYY-MM-DD (add_task, update_task, add_project)."},
+            "priority": {"type": "string", "description": "low, normal, high, urgent (add_task, add_project)."},
+            "project": {"type": "string", "description": "Project name to link a task to (add_task)."},
+            "name": {"type": "string", "description": "Project name (add_project, update_project)."},
+            "next": {"type": "string", "description": "Project next step (add_project, update_project)."},
+            "path": {"type": "string", "description": "Project directory on disk (add_project, update_project)."},
+            "repo": {"type": "string", "description": "Project repository URL (add_project, update_project)."},
+            "description": {"type": "string", "description": "Project description (add_project, update_project)."},
+            "owners": {"type": "array", "items": {"type": "string"}, "description": "Project owner profile names (add_project, update_project)."},
+            "session": {"type": "string", "description": "Session id for session_todos; leave empty for the focused chat."},
+            "past": {"type": "integer", "description": "How many past chats' todo lists to include in session_todos (0-30)."},
+            "settings": {"type": "object", "description": "Settings map for set_settings: vault_path, tasks_folder, projects_folder, owner_field, panel_rule."},
         },
         "required": ["action"],
     },
 }
+
+GROUP_SCHEMA_NOTE = "For group dashboards use 'group' instead of a bot id."
 
 
 def _ok(**data) -> str:
@@ -91,7 +114,83 @@ def _html_arg(args: dict) -> str:
     return ""
 
 
+def _add_note(panel, args):
+    """Pass only the kwargs this Panel supports. Older profile copies of
+    panel_store predate title/tags, and a stale handler can still be calling
+    one after a code update — never let a note save fail because of that."""
+    text = str(args.get("text") or "")
+    kw = {"author": "bot"}
+    try:
+        import inspect
+        supported = inspect.signature(panel.add_note).parameters
+    except (TypeError, ValueError):
+        supported = {}
+    if "title" in supported and args.get("title"):
+        kw["title"] = args["title"]
+    if "tags" in supported and args.get("tags"):
+        kw["tags"] = args["tags"]
+    if "pinned" in supported and args.get("pinned") is not None:
+        kw["pinned"] = bool(args["pinned"])
+    return panel.add_note(text, **kw)
+
+
+def _agent_actions(args: dict, bot: str):
+    """Tasks, projects, settings and session todos — the parts of the panel
+    that live in the REST layer. Returns a JSON string or None if the action is
+    not one of ours. Imports the bridge lazily so a broken REST layer cannot
+    stop notes and widgets from working."""
+    action = str(args.get("action") or "")
+    task_actions = {"list_tasks", "add_task", "update_task", "set_task_status", "delete_task"}
+    project_actions = {"list_projects", "add_project", "update_project", "delete_project"}
+    other = {"get_settings", "set_settings", "session_todos"}
+    if action not in task_actions | project_actions | other:
+        return None
+    try:
+        import agent_api as a
+        if action == "list_tasks":
+            return _ok(tasks=a.tasks(bot))
+        if action == "add_task":
+            return _ok(**a.task_add(bot, str(args.get("text") or args.get("title") or "").strip(),
+                                    args.get("due"), args.get("priority") or "normal",
+                                    args.get("tags") or [], str(args.get("project") or "")))
+        if action == "update_task":
+            fields = {k: args[k] for k in ("title", "due", "priority", "tags", "owner") if args.get(k) is not None}
+            return _ok(**a.task_update(str(args.get("file") or ""), **fields))
+        if action == "set_task_status":
+            return _ok(**a.task_status(str(args.get("file") or ""), str(args.get("status") or "")))
+        if action == "delete_task":
+            return _ok(**a.task_delete(str(args.get("file") or "")))
+        if action == "list_projects":
+            return _ok(projects=a.projects(bot, bool(args.get("all"))))
+        if action == "add_project":
+            fields = {k: args[k] for k in ("name", "status", "next", "repo", "path", "description",
+                                           "tags", "priority", "due", "owners") if args.get(k) is not None}
+            fields["name"] = str(args.get("name") or args.get("text") or "").strip()
+            return _ok(**a.project_add(bot, **fields))
+        if action == "update_project":
+            fields = {k: args[k] for k in ("name", "status", "next", "repo", "path", "description",
+                                           "tags", "priority", "due", "owners") if args.get(k) is not None}
+            return _ok(**a.project_update(str(args.get("file") or ""), **fields))
+        if action == "delete_project":
+            return _ok(**a.project_delete(str(args.get("file") or "")))
+        if action == "get_settings":
+            return _ok(**a.settings_get())
+        if action == "set_settings":
+            values = args.get("settings")
+            if not isinstance(values, dict):
+                return _err("set_settings needs a settings object.")
+            return _ok(**a.settings_save(values))
+        if action == "session_todos":
+            return _ok(**a.session_todos(bot, str(args.get("session") or ""), int(args.get("past") or 8)))
+    except Exception as exc:  # HTTPException detail or PanelError — keep the tool total
+        return _err(str(exc))
+    return None
+
+
 def handle(args: dict, **_kw) -> str:
+    extra = _agent_actions(args, _bot_id())
+    if extra is not None:
+        return extra
     panel = Panel(_home())
     action = str(args.get("action") or "")
     try:
@@ -100,6 +199,7 @@ def handle(args: dict, **_kw) -> str:
             notes = panel.notes()
             return _ok(bot=_bot_id(), layout=panel.layout(), widgets=widgets,
                        notes=[{"id": n["id"], "author": n["author"], "pinned": n.get("pinned", False),
+                               "title": n.get("title", ""), "tags": n.get("tags", []),
                                "text": n["text"][:300]} for n in notes[:20]],
                        note_count=len(notes), builtin=BUILTIN)
         if action in ("add_widget", "update_widget"):
@@ -119,10 +219,13 @@ def handle(args: dict, **_kw) -> str:
         if action == "list_notes":
             return _ok(notes=panel.notes())
         if action == "add_note":
-            return _ok(note=panel.add_note(str(args.get("text") or ""), author="bot"))
+            if args.get("note_title") and not args.get("title"):
+                args = {**args, "title": args["note_title"]}
+            return _ok(note=_add_note(panel, args))
         if action == "update_note":
             return _ok(note=panel.update_note(str(args.get("note_id") or ""), text=args.get("text"),
-                                              pinned=args.get("pinned"), author="bot"))
+                                              pinned=args.get("pinned"), author="bot",
+                                              title=args.get("note_title") or args.get("title"), tags=args.get("tags")))
         if action == "delete_note":
             return _ok(deleted=panel.delete_note(str(args.get("note_id") or "")))
         if action == "set_layout":
@@ -165,7 +268,9 @@ GROUP_SCHEMA = {
             "html_file": {"type": "string", "description": "Path to an existing .html file instead of html."},
             "height": {"type": "integer", "description": "Optional fixed height in px; omit to use the widget's own height."},
             "note_id": {"type": "string", "description": "Note id (update_note, delete_note)."},
-            "text": {"type": "string", "description": "Note text, plain text; line breaks are kept."},
+            "text": {"type": "string", "description": "Note body in Markdown, Obsidian flavour: headings, lists, - [ ] tasks, **bold**, `code`, fenced code, > quotes and > [!note] callouts, tables, [[wikilinks]] to other notes by title, and #tags (add_note, update_note). Each note is a .md file the user can open in Obsidian."},
+            "title": {"type": "string", "description": "Note title (add_note, update_note); defaults to the first heading."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Note tags without # (add_note, update_note)."},
             "pinned": {"type": "boolean", "description": "Pin or unpin a note (update_note)."},
             "order": {"type": "array", "items": {"type": "string"},
                       "description": "Card order (set_layout). Ids: hero, members, activity, tasks, projects, notes, w:<widget_id>."},
@@ -223,12 +328,18 @@ def _group_view(api, key: str, limit: int) -> str:
         layout=panel.layout(),
         widgets=[{k: w.get(k) for k in ("id", "title", "updated", "author")} for w in panel.widgets()],
         notes=[{"id": nt["id"], "author": nt["author"], "pinned": nt.get("pinned", False),
-                "text": nt["text"][:300]} for nt in panel.notes()[:20]],
+                "title": nt.get("title", ""), "tags": nt.get("tags", []),
+                "text": nt["text"][:300]} for nt in panel.notes(with_body=False)[:20]],
     )
 
 
 def handle_group(args: dict, **_kw) -> str:
     action = str(args.get("action") or "")
+    group_id = str(args.get("group") or "")
+    if group_id:
+        extra = _agent_actions(args, group_id)
+        if extra is not None:
+            return extra
     try:
         api = _api()
         if action == "list_groups":
@@ -256,10 +367,13 @@ def handle_group(args: dict, **_kw) -> str:
         if action == "list_notes":
             return _ok(notes=panel.notes())
         if action == "add_note":
-            return _ok(note=panel.add_note(str(args.get("text") or ""), author="bot"))
+            if args.get("note_title") and not args.get("title"):
+                args = {**args, "title": args["note_title"]}
+            return _ok(note=_add_note(panel, args))
         if action == "update_note":
             return _ok(note=panel.update_note(str(args.get("note_id") or ""), text=args.get("text"),
-                                              pinned=args.get("pinned"), author="bot"))
+                                              pinned=args.get("pinned"), author="bot",
+                                              title=args.get("note_title") or args.get("title"), tags=args.get("tags")))
         if action == "delete_note":
             return _ok(deleted=panel.delete_note(str(args.get("note_id") or "")))
         if action == "set_layout":
@@ -294,8 +408,8 @@ def _first_turn_context(is_first_turn: bool = False, user_message: str = "", **_
         try:
             panel = Panel(_home())
             widgets = ", ".join(w["title"] for w in panel.widgets()) or "none yet"
-            notes = panel.notes()
-            recent = "; ".join(n["text"].splitlines()[0][:80] for n in notes[:3]) or "none"
+            notes = panel.notes(with_body=False)
+            recent = "; ".join(str(n.get("title") or "")[:80] for n in notes[:3]) or "none"
             parts.append(
                 f"The user sees this panel beside the chat (desktop tab 'Bot'): profile, scheduled jobs, "
                 f"tasks, notes, projects, and custom widgets ({widgets}). Notes: {len(notes)}; latest: "

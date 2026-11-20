@@ -1,14 +1,36 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="Bot Dashboard" width="720">
+</p>
+
+<p align="center">
+  <img src="assets/icon.svg" alt="Bot Dashboard icon" width="96">
+</p>
+
 # Bot Dashboard
 
 Two desktop panes for [Hermes](https://hermes-agent.nousresearch.com), in one plugin.
+
+The **Bot** pane follows the bot behind the chat you are looking at; the **Group**
+pane follows a group chat you open. Both live in the right sidebar as tabs next
+to Files and Review, and both read only what the app already knows.
+
+## Screenshots
+
+| Bot pane | Settings window |
+| --- | --- |
+| ![Bot pane](assets/screenshot-bot-pane.png) | ![Settings window](assets/screenshot-settings.png) |
+
+The dashboard keeps each card compact by default. Open the grouped toolbar in
+the header to change settings, rearrange cards, or refresh. Long lists of tasks
+and notes open in their own windows instead of filling the pane.
 
 | Pane | Shows |
 | --- | --- |
 | **Bot** | The bot behind the chat you are looking at: profile and model, scheduled jobs, tasks, saved notes, projects, and any custom widgets that bot pinned for you. |
 | **Group** | A group chat's dashboard: members and their state, recent activity, shared tasks and projects. Pick the group from the pane, or open the group chat in the app and the pane follows it. |
 
-Both panes live in the right sidebar as tabs next to Files and Review, and both
-read only what the app already knows — no scraping, no injected UI.
+Both panes live in the right sidebar as tabs next to Files and Review. They read
+only what the app already knows — no scraping, no injected UI.
 
 ## Install
 

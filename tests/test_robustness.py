@@ -173,6 +173,7 @@ check("config.yaml plugin settings are read", _bs.setting("projects_folder") == 
 os.environ["HERMES_HOME"] = str(odd)
 
 # 9. a profile deleted between the existence check and the write is not recreated
+import panel_store as _ps
 home = odd / "profiles" / "racer"
 home.mkdir()
 pn = Panel(home)
@@ -191,6 +192,85 @@ except PanelError:
 finally:
     Path.is_dir = real
 check("delete mid-write -> PanelError, no folder", raced == "PanelError" and not home.exists(), raced)
+
+# 10. current room schema: what each member is doing, and the activity window
+full = tmp / "full" / "hermes"
+(full / "profiles" / "alpha").mkdir(parents=True)
+(full / "profiles" / "beta").mkdir(parents=True)
+db = _sq.connect(full / "state.db")
+db.executescript("""
+CREATE TABLE hosted_rooms(room_id TEXT PRIMARY KEY, name TEXT, members_json TEXT, revision INT, created_at REAL, updated_at REAL, disbanded_at REAL);
+CREATE TABLE hosted_room_events(room_id TEXT, seq INT, event_id TEXT, kind TEXT, actor_json TEXT, payload_json TEXT, created_at REAL);
+CREATE TABLE hosted_room_driver_leases(room_id TEXT, expires_at REAL, released_at REAL);
+CREATE TABLE hosted_room_driver_tasks(room_id TEXT, task_id TEXT, thread_id TEXT, status TEXT, payload_json TEXT, result_json TEXT,
+  created_at REAL, updated_at REAL, started_at REAL, terminal_at REAL);
+""")
+mem = json.dumps([{"member_id": "m-a", "profile": "alpha", "handle": "alpha", "display_name": "Alpha"},
+                  {"member_id": "m-b", "profile": "beta", "handle": "beta", "display_name": "Beta"}])
+db.execute("INSERT INTO hosted_rooms VALUES('r2','Crew',?,1,?,?,NULL)", (mem, now - 50, now))
+for i in range(1, 76):
+    db.execute("INSERT INTO hosted_room_events VALUES('r2',?,?,?,?,?,?)",
+               (i, f"e{i}", "message.member" if i % 2 else "message.user",
+                json.dumps({"kind": "member", "id": "m-a"} if i % 2 else {"kind": "user"}),
+                json.dumps({"text": f"line {i}", "member_id": "m-a"} if i % 2 else {"text": f"ask {i}"}), now - 75 + i))
+db.execute("INSERT INTO hosted_room_driver_tasks VALUES('r2','t1','th','running',?,NULL,?,?,?,NULL)",
+           (json.dumps({"target_member_id": "m-a", "target_profile": "alpha", "prompt": "Room\nUser (user): fix the build"}), now, now, now))
+db.execute("INSERT INTO hosted_room_driver_tasks VALUES('r2','t0','th','succeeded',?,?,?,?,?,?)",
+           (json.dumps({"target_member_id": "m-b", "target_profile": "beta", "prompt": "x"}), json.dumps({"text": "All green."}),
+            now - 9, now - 8, now - 9, now - 8))
+db.commit(); db.close()
+os.environ["HERMES_HOME"] = str(full)
+s = c.get("/group", params={"id": "Crew"}).json()
+check("group resolved by plain name", s.get("roomId") == "r2", str(s)[:200])
+ms = {m["id"]: m for m in s.get("members", [])}
+check("running member says what it is doing", ms.get("alpha", {}).get("state") == "running" and "fix the build" in ms["alpha"].get("doing", ""), ms.get("alpha"))
+check("idle member shows its last result", ms.get("beta", {}).get("state") == "idle" and ms["beta"].get("lastText") == "All green.", ms.get("beta"))
+check("events carry who and what", s["events"][0]["text"] and s["events"][0]["actor"] in ("You", "Alpha"), s["events"][:2])
+a = c.get("/group/activity", params={"id": "group:id:r2", "limit": 50}).json()
+check("activity window pages", len(a["events"]) == 50 and a["more"] and a["count"] == 75, {k: a[k] for k in ("count", "more")})
+b = c.get("/group/activity", params={"id": "group:id:r2", "limit": 50, "before": a["events"][-1]["seq"]}).json()
+check("activity second page", len(b["events"]) == 25 and not b["more"], len(b["events"]))
+check("activity on unknown group -> 404", c.get("/group/activity", params={"id": "nope"}).status_code == 404)
+
+# 11. task edit/delete, project CRUD, markdown notes
+os.environ["HERMES_HOME"] = str(root)
+r = c.post("/task", json={"bot": "worker", "title": "Edit me", "priority": "high", "tags": ["ui", "#x"], "due": "2026-12-01"})
+f = r.json().get("file")
+check("task create with priority/tags", r.status_code == 200 and any(x["title"] == "Edit me" and x["priority"] == "high" and x["tags"] == ["ui", "x"]
+      for x in c.get("/bot", params={"id": "worker"}).json()["tasks"]), r.text[:160])
+r = c.post("/task/update", json={"file": f, "title": "Edited", "due": "", "tags": ["done-ui"]})
+fm = _y.safe_load((brain / "TaskNotes" / "Tasks" / f).read_text(encoding="utf-8").split("---")[1])
+check("task update rewrites only named keys", r.status_code == 200 and fm["title"] == "Edited" and fm["due"] is None and fm["tags"] == ["task", "done-ui"] and fm["bot"] == "worker", fm)
+r = c.post("/task/status", json={"file": f, "status": "done"})
+check("task done sets completedDate", "completedDate" in (brain / "TaskNotes" / "Tasks" / f).read_text(encoding="utf-8"))
+check("task status path escape -> 404", c.post("/task/status", json={"file": "../x.md", "status": "done"}).status_code == 404)
+r = c.post("/task/delete", json={"file": f})
+check("task delete moves to .trash", r.status_code == 200 and not (brain / "TaskNotes" / "Tasks" / f).exists() and (brain / ".trash" / f).exists(), r.text[:160])
+r = c.post("/project", json={"bot": "worker", "name": "Site/Redo", "path": "C:/code/site", "description": "New site", "tags": ["web"]})
+pf = r.json().get("file")
+check("project create", r.status_code == 200 and pf == "Site Redo.md", r.text[:160])
+check("project duplicate -> 409", c.post("/project", json={"bot": "worker", "name": "Site Redo"}).status_code == 409)
+pj = [x for x in c.get("/bot", params={"id": "worker"}).json()["projects"] if x["name"] == "Site Redo"]
+check("project listed with path and description", pj and pj[0]["path"] == "C:/code/site" and pj[0]["description"] == "New site", pj)
+r = c.post("/project/update", json={"file": pf, "name": "Site v3", "status": "paused", "next": "Ship it"})
+check("project rename + status", r.status_code == 200 and (brain / "Projects" / "Site v3.md").is_file() and not (brain / "Projects" / pf).exists(), r.text[:160])
+check("project bad status -> 400", c.post("/project/update", json={"file": "Site v3.md", "status": "zzz"}).status_code == 400)
+check("project delete", c.post("/project/delete", json={"file": "Site v3.md"}).status_code == 200 and not (brain / "Projects" / "Site v3.md").exists())
+check("projects list all", isinstance(c.get("/projects", params={"all": True}).json()["projects"], list))
+legacy = root / "profiles" / "worker" / "panel"
+legacy.mkdir(parents=True, exist_ok=True)
+(legacy / "notes.json").write_text(json.dumps([{"id": "abcd1234", "text": "# Old\nbody #legacy", "author": "bot", "pinned": True}]), encoding="utf-8")
+n = c.get("/panel/notes", params={"bot": "worker"}).json()["notes"]
+check("legacy notes.json migrated to markdown", n and n[0]["title"] == "Old" and "legacy" in n[0]["tags"] and (legacy / "notes" / "abcd1234.md").is_file(), n)
+r = c.post("/panel/note", json={"bot": "worker", "title": "Plan", "text": "- [ ] a\n- [x] b\n[[Old]]", "tags": ["plan"]})
+nid = r.json()["note"]["id"]
+check("markdown note: title, tasks, links", r.json()["note"]["tasks"] == [1, 1] and r.json()["note"]["links"] == ["Old"], r.json())
+r = c.post("/panel/note/update", json={"bot": "worker", "id": nid, "text": "x" * 5000})
+check("long markdown note accepted", r.status_code == 200 and len(c.get("/panel/note", params={"bot": "worker", "id": nid}).json()["note"]["text"]) == 5000)
+sm = c.get("/bot", params={"id": "worker"}).json()["panel"]["notes"]
+check("summary notes are trimmed", all(len(x["text"]) <= 600 for x in sm) and any(x["partial"] for x in sm))
+check("bad note id -> 400", c.get("/panel/note", params={"bot": "worker", "id": "../x"}).status_code == 400)
+os.environ["HERMES_HOME"] = str(odd)
 
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")
 shutil.rmtree(tmp, ignore_errors=True)

@@ -150,21 +150,28 @@ def test_tools_follow_the_session_profile():
             assert MOD._bot_id() == "scout", MOD._bot_id()
             out = json.loads(MOD.handle({"action": "add_note", "text": "routed"}))
             assert "error" not in out, out
-            assert "routed" in (home / "panel" / "notes.json").read_text(encoding="utf-8")
+            files = list((home / "panel" / "notes").glob("*.md"))
+            assert files and "routed" in files[0].read_text(encoding="utf-8"), files
         finally:
             reset_hermes_home_override(token)
 
 
 def test_hook_is_quiet_by_default():
     # Defaults only: ignore whatever this machine's config.yaml sets.
+    import tempfile
     real = MOD.bd_settings.setting
+    real_home = MOD._home
+    tmp = tempfile.TemporaryDirectory()
     MOD.bd_settings.setting = lambda key: MOD.bd_settings.DEFAULTS.get(key, "")
+    MOD._home = lambda: Path(tmp.name)  # this machine's own notes must not leak into the check
     try:
         first = MOD._first_turn_context(is_first_turn=True, user_message="hi")
         later = MOD._first_turn_context(is_first_turn=False, user_message="keep going")
         asked = MOD._first_turn_context(is_first_turn=False, user_message="add a widget to my dashboard")
     finally:
         MOD.bd_settings.setting = real
+        MOD._home = real_home
+        tmp.cleanup()
     assert "desktop tab 'Bot'" in first["context"], first
     assert later is None, f"a plain turn got context: {later}"
     assert "desktop tab 'Bot'" in asked["context"], asked
