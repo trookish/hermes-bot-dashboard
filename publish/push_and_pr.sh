@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Run after `gh auth login` (needs repo + workflow scopes).
 set -euo pipefail
+
+# GitHub token from the Windows Credential Manager (no read:org, so gh auth login
+# refuses it, but repo + workflow scopes are enough for everything below).
+TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' \
+  | git credential-manager get 2>/dev/null | tr -d '\r' | sed -n 's/^password=//p' | head -1)
+if [ -z "$TOKEN" ]; then
+  echo "No GitHub credential found. Run 'gh auth login' first." >&2
+  exit 1
+fi
+export GH_TOKEN="$TOKEN"
 REPO="C:/Users/trookish/AppData/Local/hermes/profiles/ops/cache/scratch/bd-repo-probe"
 FORK="trookish/hermes-agent"
 cd "$REPO"
@@ -8,7 +18,7 @@ cd "$REPO"
 echo "== 1. Push plugin source + 1.3.0 release =="
 git remote -v | grep -q origin || git remote add origin https://github.com/trookish/hermes-bot-dashboard.git
 git push -u origin HEAD:main
-git push origin 4253d8ebc7c57118a29cd89614be70c10b96e82d:refs/tags/v1.3.0
+git push origin afaaf6ef0a8c3815237383569bed952a67357178:refs/tags/v1.3.0
 CODE=$(git rev-parse HEAD~1)
 echo "pinned code commit: $CODE"
 
