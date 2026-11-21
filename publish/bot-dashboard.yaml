@@ -1,6 +1,6 @@
 name: bot-dashboard
 repo: https://github.com/trookish/hermes-bot-dashboard
-sha: afaaf6ef0a8c3815237383569bed952a67357178
+sha: 329cc17fae8a26396f5daa1f2d40170d7415182b
 title: Bot Dashboard
 description: >-
   Two desktop panes in one plugin. Bot shows the focused bot's dashboard - profile and
@@ -24,14 +24,14 @@ category: desktop
 version: "1.3.0"
 requires_hermes: ">=0.20.0"
 docs_url: https://github.com/trookish/hermes-bot-dashboard#readme
-image: https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/afaaf6ef0a8c3815237383569bed952a67357178/assets/banner.svg
+image: https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/329cc17fae8a26396f5daa1f2d40170d7415182b/assets/banner.svg
 screenshots:
-  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/afaaf6ef0a8c3815237383569bed952a67357178/assets/screenshot-bot-pane.png
-  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/afaaf6ef0a8c3815237383569bed952a67357178/assets/screenshot-tasks.png
-  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/afaaf6ef0a8c3815237383569bed952a67357178/assets/screenshot-notes.png
-  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/afaaf6ef0a8c3815237383569bed952a67357178/assets/screenshot-your-day-widget.png
-  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/afaaf6ef0a8c3815237383569bed952a67357178/assets/screenshot-group-dashboard.png
-  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/afaaf6ef0a8c3815237383569bed952a67357178/assets/screenshot-panels.png
+  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/329cc17fae8a26396f5daa1f2d40170d7415182b/assets/screenshot-bot-pane.png
+  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/329cc17fae8a26396f5daa1f2d40170d7415182b/assets/screenshot-tasks.png
+  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/329cc17fae8a26396f5daa1f2d40170d7415182b/assets/screenshot-notes.png
+  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/329cc17fae8a26396f5daa1f2d40170d7415182b/assets/screenshot-your-day-widget.png
+  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/329cc17fae8a26396f5daa1f2d40170d7415182b/assets/screenshot-group-dashboard.png
+  - https://raw.githubusercontent.com/trookish/hermes-bot-dashboard/329cc17fae8a26396f5daa1f2d40170d7415182b/assets/screenshot-panels.png
 readme: true
 platforms: []
 capabilities:
