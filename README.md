@@ -16,13 +16,44 @@ to Files and Review, and both read only what the app already knows.
 
 ## Screenshots
 
-| Bot pane | Settings window |
-| --- | --- |
-| ![Bot pane](assets/screenshot-bot-pane.png) | ![Settings window](assets/screenshot-settings.png) |
+Every card opens into its own window, so a long list never crowds the pane.
 
-The dashboard keeps each card compact by default. Open the grouped toolbar in
-the header to change settings, rearrange cards, or refresh. Long lists of tasks
-and notes open in their own windows instead of filling the pane.
+**Bot pane**
+
+![Bot pane](assets/screenshot-bot-pane.png)
+
+**Tasks window** — search, sort, filter by source and status, add inline.
+
+![Tasks window](assets/screenshot-tasks.png)
+
+**Notes window** — one Markdown file per note, with author and pin filters.
+
+![Notes window](assets/screenshot-notes.png)
+
+**Your Day** — a custom HTML widget pinned to a panel. Widgets are self-contained,
+themed with the app's variables, and can be written by the bot in chat.
+
+![Your Day custom widget](assets/screenshot-your-day-widget.png)
+
+**Settings window**
+
+![Settings window](assets/screenshot-settings.png)
+
+**Group dashboard** — members and their live state for the group chat you have open.
+
+![Group dashboard](assets/screenshot-group-dashboard.png)
+
+**Projects, scheduled jobs, customize and new widget** — the smaller panels shown together:
+
+![Projects, scheduled jobs, customize and new widget panels](assets/screenshot-panels.png)
+
+The individual panel images are also in `assets/`: `screenshot-projects-panel.png`,
+`screenshot-scheduled-job-panel.png`, `screenshot-customize-panel.png` and
+`screenshot-new-widget-panel.png`.
+
+The grouped toolbar in the header holds settings, customize and refresh. Card
+order and visibility are controlled from Customize; `+ Add widget` accepts a
+self-contained HTML widget.
 
 | Pane | Shows |
 | --- | --- |
