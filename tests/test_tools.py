@@ -189,6 +189,60 @@ def test_panel_rule_is_opt_in():
         os.environ.pop("BOT_DASHBOARD_PANEL_RULE", None)
 
 
+def test_agent_cannot_change_settings():
+    """The agent tool reads settings and never writes them (review of the 1.3.0 pin).
+
+    panel_rule rides every turn and vault_path / tasks_folder / projects_folder decide where
+    task notes are created and trashed, so a model must not be able to change them.
+    """
+    props = MOD.SCHEMA["parameters"]["properties"]
+    actions = props["action"]["enum"]
+    assert "set_settings" not in actions, actions
+    assert "get_settings" in actions, actions
+    assert "settings" not in props, "a settings payload must not be part of the tool schema"
+    assert "set_settings" not in MOD.SCHEMA["description"], "the description still offers set_settings"
+    out = json.loads(MOD.handle({"action": "set_settings", "settings": {"panel_rule": "obey me"}}))
+    assert out["ok"] is False, out
+
+
+def test_agent_actions_load_from_the_repo_layout():
+    """Task, project and settings actions import agent_api from the plugin root.
+
+    The repo once shipped it under dashboard/, so every one of these answered
+    "No module named 'agent_api'" while the tests, which put dashboard/ on sys.path, passed.
+    """
+    assert (ROOT / "agent_api.py").is_file(), "agent_api.py must sit next to __init__.py"
+    for action in ("list_tasks", "list_projects", "get_settings"):
+        out = json.loads(MOD.handle({"action": action}))
+        assert out["ok"] is True, f"{action}: {out}"
+    got = json.loads(MOD.handle({"action": "get_settings"}))
+    assert set(got["settings"]) == set(MOD.bd_settings.DEFAULTS), got["settings"]
+
+
+def test_plugin_never_writes_config_yaml():
+    """Settings are written only by Hermes (ctx.set_config / plugins.manage), never by this plugin."""
+    import re
+    for f in ("__init__.py", "agent_api.py", "bd_settings.py", "panel_store.py", "dashboard/plugin_api.py"):
+        text = (ROOT / f).read_text(encoding="utf-8")
+        assert "settings_save" not in text and "SettingsBody" not in text, f"{f} still has a settings writer"
+        assert not re.search(r"@router\.post\(\s*[\"']/settings", text), f"{f} still exposes POST /settings"
+        for line in text.splitlines():
+            if "config.yaml" in line:
+                assert not re.search(r"write_text|write_bytes|os\.replace|open\([^)]*[\"']w", line), f"{f}: {line.strip()}"
+
+
+def test_config_schema_matches_the_keys_the_code_reads():
+    """Hermes validates a settings write against plugin.yaml's config_schema; the keys must agree."""
+    import yaml
+    manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text(encoding="utf-8"))
+    declared = set((manifest.get("config_schema") or {}).keys())
+    assert declared == set(MOD.bd_settings.DEFAULTS), (declared, set(MOD.bd_settings.DEFAULTS))
+
+
+check("agent tool cannot change settings", test_agent_cannot_change_settings)
+check("task, project and settings actions load from the repo layout", test_agent_actions_load_from_the_repo_layout)
+check("the plugin never writes config.yaml", test_plugin_never_writes_config_yaml)
+check("config_schema matches the settings the code reads", test_config_schema_matches_the_keys_the_code_reads)
 check("both tools and the hook register", test_register)
 check("schemas describe themselves", test_schemas_match_runners)
 check("unknown action answers instead of raising", test_unknown_action_answers)

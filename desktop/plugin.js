@@ -3163,6 +3163,8 @@ function PrefRow({ label, hint, children }) {
     h('span', { className: 'bd-pref-control' }, children))
 }
 
+const BD_SETTING_KEYS = ['vault_path', 'tasks_folder', 'projects_folder', 'owner_field', 'panel_rule']
+
 function SettingsWindow({ bot, group, prefs, onSavePrefs, onClose, onCustomize }) {
   const [tab, setTab] = useState('dashboard')
   const [server, setServer] = useState(null)
@@ -3170,14 +3172,23 @@ function SettingsWindow({ bot, group, prefs, onSavePrefs, onClose, onCustomize }
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [local, setLocal] = useState({ ...prefs })
+  // A group has no profile of its own, so its settings are always the shared ones.
+  const botId = group ? '' : String(bot.id || '')
+  const canScope = !!botId && botId !== 'hermes'
+  const [scope, setScope] = useState('all')
 
   useEffect(() => {
     let alive = true
-    rest('/settings')
-      .then(d => { if (alive) { setServer(d); setDraft({ ...(d?.settings || {}) }) } })
+    rest(`/settings?bot=${encodeURIComponent(botId)}`)
+      .then(d => {
+        if (!alive) return
+        setServer(d)
+        setDraft({ ...(d?.settings || {}) })
+        if (canScope && Object.keys(d?.own || {}).length) setScope('bot')
+      })
       .catch(err => { if (alive) setMessage(`Could not read settings: ${errorText(err)}`) })
     return () => { alive = false }
-  }, [])
+  }, [botId])
 
   const setPref = (key, value) => setLocal(p => ({ ...p, [key]: value }))
 
@@ -3192,12 +3203,37 @@ function SettingsWindow({ bot, group, prefs, onSavePrefs, onClose, onCustomize }
     setBusy(true)
     setMessage('')
     try {
-      await rest('/settings', { method: 'POST', body: { settings: draft } })
-      setServer(await rest('/settings'))
-      setMessage('Plugin settings saved. Refresh the dashboard to apply vault changes.')
+      // Send only what changed. An unchanged key must not be written into a bot's own
+      // config, or it would stop following the shared value.
+      const changes = {}
+      for (const k of BD_SETTING_KEYS) {
+        if (server?.envOverrides?.[k]) continue
+        const next = String(draft?.[k] ?? '').trim()
+        if (next !== String(server?.settings?.[k] ?? '').trim()) changes[k] = next
+      }
+      if (!Object.keys(changes).length) {
+        setMessage('No plugin settings changed.')
+        return
+      }
+      // Hermes writes this: it locks config.yaml, checks the plugin's config_schema and
+      // changes the one profile named here. This plugin never writes the file itself.
+      const profile = scope === 'bot' && canScope ? profileFor(botId) : 'default'
+      await host.requestProfile(
+        profile,
+        'plugins.manage',
+        { action: 'settings', key: 'bot-dashboard', values: changes, profile },
+        20_000
+      )
+      const fresh = await rest(`/settings?bot=${encodeURIComponent(botId)}`)
+      setServer(fresh)
+      setDraft({ ...(fresh?.settings || {}) })
+      setMessage(`Saved for ${scope === 'bot' && canScope ? `@${botId}` : 'all bots'}. Press refresh on the dashboard to apply vault changes.`)
       host.notify?.({ kind: 'success', message: 'Bot Dashboard settings saved.' })
     } catch (err) {
-      setMessage(`Could not save: ${errorText(err)}`)
+      const why = errorText(err)
+      setMessage(scope === 'bot' && /not found/i.test(why)
+        ? `Could not save: Bot Dashboard is not installed for @${botId}, so it cannot hold its own settings. Choose "All bots" instead.`
+        : `Could not save: ${why}`)
     } finally {
       setBusy(false)
     }
@@ -3260,33 +3296,45 @@ function SettingsWindow({ bot, group, prefs, onSavePrefs, onClose, onCustomize }
       h('button', { type: 'button', className: 'bd-btn', onClick: () => setLocal({ ...PREF_DEFAULTS }) }, 'Reset defaults'),
       h('button', { type: 'button', className: 'bd-btn primary', onClick: savePrefs }, 'Save preferences')))
 
+  const src = k => (server
+    ? ` Source: ${server.envOverrides?.[k] ? 'environment' : server.own?.[k] ? 'this bot' : server.shared?.[k] ? 'all bots' : 'default'}.`
+    : '')
+
   const vaultTab = h('form', { onSubmit: saveServer },
     h('p', { className: 'bd-hint' },
-      'Shared by every bot and group on this computer. Only these five keys are written to config.yaml — tokens and comments are left untouched. Values set through environment variables cannot be changed here.'),
+      'Saved through Hermes, which locks config.yaml and checks each value. Choose whether a value applies to this bot or to every bot; an empty value follows the shared one. Bots can read these settings but cannot change them. Values set through environment variables cannot be changed here.'),
+    canScope
+      ? h('div', { className: 'bd-seg', role: 'group', 'aria-label': 'Save settings for' },
+          [{ id: 'bot', label: `This bot (@${botId})` }, { id: 'all', label: 'All bots' }].map(o =>
+            h('button', {
+              key: o.id, type: 'button', className: scope === o.id ? 'on' : '',
+              'aria-pressed': scope === o.id, onClick: () => setScope(o.id)
+            }, o.label)))
+      : null,
     !server
       ? h('div', { className: 'bd-skeleton', style: { height: 180 } })
       : h('div', { className: 'bd-settings-group' },
-          h(PrefRow, { label: 'Vault path', hint: 'A markdown/Obsidian vault folder. Task and project notes live here.' },
+          h(PrefRow, { label: 'Vault path', hint: 'A markdown/Obsidian vault folder. Task and project notes live here.' + src('vault_path') },
             h('input', {
               className: 'desktop-input-chrome bd-input', value: draft?.vault_path || '',
               placeholder: 'C:/Users/you/Desktop/HermesBrain', 'aria-label': 'Vault path',
               onChange: e => setDraft(d => ({ ...d, vault_path: e.target.value }))
             })),
-          h(PrefRow, { label: 'Tasks folder', hint: 'Relative to the vault path.' },
+          h(PrefRow, { label: 'Tasks folder', hint: 'Relative to the vault path.' + src('tasks_folder') },
             h('input', { className: 'desktop-input-chrome bd-input', value: draft?.tasks_folder || '', 'aria-label': 'Tasks folder', onChange: e => setDraft(d => ({ ...d, tasks_folder: e.target.value })) })),
-          h(PrefRow, { label: 'Projects folder', hint: 'Relative to the vault path.' },
+          h(PrefRow, { label: 'Projects folder', hint: 'Relative to the vault path.' + src('projects_folder') },
             h('input', { className: 'desktop-input-chrome bd-input', value: draft?.projects_folder || '', 'aria-label': 'Projects folder', onChange: e => setDraft(d => ({ ...d, projects_folder: e.target.value })) })),
-          h(PrefRow, { label: 'Owner field', hint: 'Frontmatter key that names the bot a note belongs to.' },
+          h(PrefRow, { label: 'Owner field', hint: 'Frontmatter key that names the bot a note belongs to.' + src('owner_field') },
             h('input', { className: 'desktop-input-chrome bd-input', value: draft?.owner_field || '', 'aria-label': 'Owner field', onChange: e => setDraft(d => ({ ...d, owner_field: e.target.value })) })),
-          h(PrefRow, { label: 'Panel rule', hint: 'Instruction added to every turn. Bots use it to record decisions here.' },
+          h(PrefRow, { label: 'Panel rule', hint: 'Instruction added to every turn. Only you can change it; bots can read it.' + src('panel_rule') },
             h('textarea', { className: 'desktop-input-chrome bd-input bd-textarea', rows: 3, value: draft?.panel_rule || '', 'aria-label': 'Panel rule', onChange: e => setDraft(d => ({ ...d, panel_rule: e.target.value })) })),
           h('div', { className: 'bd-win-meta' },
             h('span', { className: `bd-pill ${server.vaultFound ? 'ok' : 'warn'}` }, server.vaultFound ? 'Vault found' : 'Vault not found'),
-            h('span', { className: 'bd-hint' }, server.path || '')),
+            h('span', { className: 'bd-hint' }, (scope === 'bot' && canScope ? server.paths?.own : server.paths?.shared) || '')),
           Object.entries(server.envOverrides || {}).filter(([, v]) => v).map(([k]) =>
             h('div', { className: 'bd-hint', key: k }, `${k} is set through an environment variable and cannot be changed here.`))),
     h('div', { className: 'bd-toolbar', style: { justifyContent: 'flex-end' } },
-      h('button', { type: 'submit', className: 'bd-btn primary', disabled: busy || !draft }, busy ? 'Saving…' : 'Save plugin settings')))
+      h('button', { type: 'submit', className: 'bd-btn primary', disabled: busy || !draft }, busy ? 'Saving…' : scope === 'bot' && canScope ? 'Save for this bot' : 'Save for all bots')))
 
   return h(
     Win,

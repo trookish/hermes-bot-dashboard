@@ -12,11 +12,27 @@ Presentation and polish for the catalog and marketplace page.
   aligned toolbar; long task and note lists open in their own windows; the
   notes editor behaves like a markdown file with read and write modes.
 - **Configurable.** Each dashboard's settings window controls appearance,
-  refresh behaviour and card counts; the global settings route is editable
-  from the same window. Native selects follow the desktop theme.
+  refresh behaviour and card counts, and its Vault & rules tab edits the plugin
+  settings for this bot or for all bots. Native selects follow the desktop theme.
 - **Agent tools.** `bot_panel` gained read/edit actions for tasks, notes,
-  projects, settings and session todos; an in-process bridge keeps it and the
-  REST routes on the same validation and storage code.
+  projects and session todos, and can read the plugin settings. An in-process
+  bridge keeps it and the REST routes on the same validation and storage code.
+- **Settings are written by Hermes, not by this plugin.** The Vault & rules tab
+  saves through Hermes' own `plugins.manage` settings call, which takes its
+  cross-process lock, validates against `config_schema` and writes the profile
+  named (this bot, or the default profile for all bots). The plugin no longer
+  rewrites `config.yaml`, and `POST /settings` is gone. `GET /settings?bot=`
+  reports a bot's own, shared and effective values, read-only.
+- **The agent cannot change settings.** `set_settings` is removed from
+  `bot_panel`; `get_settings` stays read-only. `panel_rule` rides every turn and
+  the vault and folder settings decide where task notes are created and
+  trashed, so only the user changes them.
+- **Packaging fix.** `agent_api.py` now sits next to `__init__.py`. In the
+  repository layout it lived under `dashboard/`, so every `bot_panel` task,
+  project, settings and session-todo action answered `No module named
+  'agent_api'`. A test now loads those actions from the repository layout.
+- **Dev-only release scripts removed.** The `publish/` folder is gone; nothing
+  in the plugin ran it.
 - **Compatibility fixes.** Task statuses, note length and group activity
   errors reported from the live app are fixed; every profile copy is kept in
   sync so the installed plugin matches the repository.

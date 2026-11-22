@@ -82,18 +82,35 @@ def _settings_in(config_path: Path) -> dict:
     return out
 
 
-def setting(key: str) -> str:
+def _homes(home: Optional[Path] = None) -> list[Path]:
+    """Where a value is looked up, in order: ``home`` (default: the active profile), then the root."""
+    homes: list[Path] = []
+    for getter in ((lambda: home) if home is not None else hermes_home, hermes_root):
+        try:
+            homes.append(Path(getter()))
+        except Exception:  # noqa: BLE001
+            continue
+    return list(dict.fromkeys(homes))
+
+
+def raw_settings(home: Path) -> dict[str, str]:
+    """The settings one profile's own config.yaml holds: no fallback, no defaults, read-only.
+
+    Settings are written only by Hermes (``ctx.set_config`` or the Settings window's
+    ``plugins.manage`` call), never by this plugin.
+    """
+    found = _settings_in(Path(home) / "config.yaml")
+    return {k: str(v).strip() for k, v in found.items()
+            if k in DEFAULTS and v is not None and str(v).strip()}
+
+
+def setting(key: str, home: Optional[Path] = None) -> str:
+    """One setting: environment override, then ``home`` (default: the active profile), then the root."""
     env = os.environ.get(_ENV_PREFIX + key.upper())
     if env is not None and env.strip():
         return env.strip()
-    homes = []
-    for getter in (hermes_home, hermes_root):
-        try:
-            homes.append(getter())
-        except Exception:  # noqa: BLE001
-            continue
-    for home in dict.fromkeys(homes):
-        value = _settings_in(home / "config.yaml").get(key)
+    for found in _homes(home):
+        value = _settings_in(found / "config.yaml").get(key)
         if value is not None and str(value).strip():
             return str(value).strip()
     return DEFAULTS.get(key, "")

@@ -40,12 +40,12 @@ SCHEMA = {
         "tasks, notes, projects. This tool does everything the dashboard does: read/write Markdown "
         "notes, add custom self-contained HTML widgets (sandboxed, themed with --foreground, "
         "--muted-foreground, --border, --accent, --card; no network), manage task notes and project "
-        "notes, read the focused chat's todo list, and read or change the plugin's five settings. "
+        "notes, read the focused chat's todo list, and read the plugin's settings (read-only). "
         "Use it when the user asks to add, change or remove anything in your panel, to pin a useful "
         "view, to plan work as tasks, or to leave them a note. Actions: view, add_widget, "
         "update_widget, remove_widget, set_layout, list_notes, get_note, add_note, update_note, "
         "delete_note, list_tasks, add_task, update_task, set_task_status, delete_task, "
-        "list_projects, add_project, update_project, delete_project, get_settings, set_settings, "
+        "list_projects, add_project, update_project, delete_project, get_settings, "
         "session_todos."
     ),
     "parameters": {
@@ -57,7 +57,7 @@ SCHEMA = {
                          "list_notes", "get_note", "add_note", "update_note", "delete_note",
                          "list_tasks", "add_task", "update_task", "set_task_status", "delete_task",
                          "list_projects", "add_project", "update_project", "delete_project",
-                         "get_settings", "set_settings", "session_todos"],
+                         "get_settings", "session_todos"],
             },
             "widget_id": {"type": "string", "description": "Widget id (update_widget, remove_widget)."},
             "title": {"type": "string", "description": "Widget title (add_widget, update_widget)."},
@@ -85,7 +85,6 @@ SCHEMA = {
             "owners": {"type": "array", "items": {"type": "string"}, "description": "Project owner profile names (add_project, update_project)."},
             "session": {"type": "string", "description": "Session id for session_todos; leave empty for the focused chat."},
             "past": {"type": "integer", "description": "How many past chats' todo lists to include in session_todos (0-30)."},
-            "settings": {"type": "object", "description": "Settings map for set_settings: vault_path, tasks_folder, projects_folder, owner_field, panel_rule."},
         },
         "required": ["action"],
     },
@@ -142,7 +141,7 @@ def _agent_actions(args: dict, bot: str):
     action = str(args.get("action") or "")
     task_actions = {"list_tasks", "add_task", "update_task", "set_task_status", "delete_task"}
     project_actions = {"list_projects", "add_project", "update_project", "delete_project"}
-    other = {"get_settings", "set_settings", "session_todos"}
+    other = {"get_settings", "session_todos"}
     if action not in task_actions | project_actions | other:
         return None
     try:
@@ -174,12 +173,7 @@ def _agent_actions(args: dict, bot: str):
         if action == "delete_project":
             return _ok(**a.project_delete(str(args.get("file") or "")))
         if action == "get_settings":
-            return _ok(**a.settings_get())
-        if action == "set_settings":
-            values = args.get("settings")
-            if not isinstance(values, dict):
-                return _err("set_settings needs a settings object.")
-            return _ok(**a.settings_save(values))
+            return _ok(**a.settings_get(bot))
         if action == "session_todos":
             return _ok(**a.session_todos(bot, str(args.get("session") or ""), int(args.get("past") or 8)))
     except Exception as exc:  # HTTPException detail or PanelError — keep the tool total

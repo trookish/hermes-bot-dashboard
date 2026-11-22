@@ -1213,103 +1213,52 @@ def session_todos(bot: str = Query("", max_length=64), session: str = Query("", 
 
 
 # ---------------------------------------------------------------- plugin settings
+#
+# Read-only on purpose. This plugin never writes config.yaml. The desktop settings
+# window saves through Hermes (`plugins.manage`, action `settings`), which takes its
+# cross-process lock, validates against `config_schema`, refuses managed installs and
+# writes the profile it is given. The agent tool can read these values, never change them.
 
 SETTING_KEYS = ("vault_path", "tasks_folder", "projects_folder", "owner_field", "panel_rule")
 
 
-def _settings_path() -> Path:
-    return bd_settings.hermes_root() / "config.yaml"
+def _env_override(key: str) -> bool:
+    return bool((os.environ.get("BOT_DASHBOARD_" + key.upper()) or "").strip())
 
 
 @router.get("/settings")
-def settings_get() -> dict:
-    """The five Bot Dashboard settings, with their live values and env overrides."""
+def settings_get(bot: str = Query("", max_length=64)) -> dict:
+    """The five Bot Dashboard settings as one bot sees them.
+
+    ``own`` is what that bot's profile sets itself and ``shared`` what the root profile
+    sets for every bot. A bot's own value wins, then the shared one, then the default.
+    The root profile has no separate ``own``: its values are the shared ones.
+    """
+    who = _norm_bot(bot)
+    home = _bot_home(who)  # 404 for a profile that does not exist
+    root = _root()
+
     def read():
-        values = {k: bd_settings.setting(k) for k in SETTING_KEYS}
-        env = {k: k.upper() in os.environ or ("BOT_DASHBOARD_" + k.upper()) in os.environ
-               for k in SETTING_KEYS}
-        vault = bd_settings.vault()
+        own = {} if home == root else bd_settings.raw_settings(home)
+        shared = bd_settings.raw_settings(root)
+        values = {k: bd_settings.setting(k, home) for k in SETTING_KEYS}
+        vault = Path(values["vault_path"]).expanduser() if values["vault_path"] else None
+        found = bool(vault and vault.is_dir())
         return {
+            "bot": who,
             "settings": values,
-            "defaults": dict(bd_settings.DEFAULTS),
-            "envOverrides": env,
-            "vaultFound": bool(vault and vault.is_dir()),
-            "vaultState": bd_settings.vault_state(),
-            "path": str(_settings_path())
+            "own": own,
+            "shared": shared,
+            "defaults": {k: bd_settings.DEFAULTS[k] for k in SETTING_KEYS},
+            "envOverrides": {k: _env_override(k) for k in SETTING_KEYS},
+            "vaultFound": found,
+            "vaultState": {"set": vault is not None, "found": found,
+                           "tasks": values["tasks_folder"], "projects": values["projects_folder"],
+                           "owner": values["owner_field"] or "bot"},
+            "paths": {"own": str(home / "config.yaml"), "shared": str(root / "config.yaml")},
         }
-    return _safe(read, {"settings": {k: bd_settings.DEFAULTS[k] for k in SETTING_KEYS},
-                        "defaults": dict(bd_settings.DEFAULTS), "envOverrides": {},
-                        "vaultFound": False, "vaultState": {}, "path": ""})
 
-
-class SettingsBody(BaseModel):
-    settings: dict[str, str]
-
-
-def _settings_block_lines(text: str) -> tuple[int, int, int] | None:
-    """Locate plugins.entries.bot-dashboard.settings in config.yaml by line
-    number, so a save touches only those lines and leaves tokens intact.
-    Returns (start_line, end_line_exclusive, indent)."""
-    try:
-        node = yaml.compose(text)
-    except yaml.YAMLError:
-        return None
-    def child(mapping, name):
-        if not isinstance(mapping, yaml.MappingNode):
-            return None
-        for k, v in mapping.value:
-            if getattr(k, "value", "") == name:
-                return v
-        return None
-    try:
-        settings = child(child(child(child(node, "plugins"), "entries"), "bot-dashboard"), "settings")
-    except Exception:
-        return None
-    if settings is None or not isinstance(settings, yaml.MappingNode) or not settings.value:
-        return None
-    start = min(k.start_mark.line for k, _ in settings.value)
-    end = max(v.end_mark.line for _, v in settings.value) + 1
-    indent = settings.value[0][0].start_mark.column
-    return start, end, indent
-
-
-@router.post("/settings")
-def settings_save(body: SettingsBody) -> dict:
-    """Replace only the five allowlisted keys inside
-    plugins.entries.bot-dashboard.settings. The rest of config.yaml — including
-    tokens, comments and every other plugin — is never rewritten."""
-    updates = body.settings if isinstance(body.settings, dict) else {}
-    for key, value in updates.items():
-        if key not in SETTING_KEYS:
-            raise HTTPException(400, f"Unknown setting: {key}")
-        if not isinstance(value, str) or len(value) > 1000:
-            raise HTTPException(400, f"Invalid value for {key}.")
-        if key in ("vault_path", "tasks_folder", "projects_folder") and "\x00" in value:
-            raise HTTPException(400, f"Invalid path for {key}.")
-
-    path = _settings_path()
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        text = ""
-    block = _settings_block_lines(text)
-    merged = {k: bd_settings.setting(k) for k in SETTING_KEYS}
-    merged.update({k: v.strip() for k, v in updates.items()})
-    payload = yaml.safe_dump(merged, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    indented = "".join(" " * block[2] + line + "\n" for line in payload.splitlines()) if block else ""
-    lines = text.splitlines(keepends=True)
-    if block and block[1] <= len(lines):
-        lines[block[0]:block[1]] = [indented]
-    else:
-        # No settings block yet: append one under plugins.entries.bot-dashboard.
-        lines.append("plugins:\n  entries:\n    bot-dashboard:\n      settings:\n" + indented)
-    text = "".join(lines)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".yaml.tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8", newline="")
-        os.replace(tmp, path)
-    except OSError as exc:
-        raise HTTPException(503, f"Could not save the settings: {exc}") from exc
-    # The settings cache keys on mtime; a fresh write invalidates it.
-    return {"ok": True, "settings": {k: bd_settings.setting(k) for k in SETTING_KEYS}}
+    return _safe(read, {"bot": who, "settings": {k: bd_settings.DEFAULTS[k] for k in SETTING_KEYS},
+                        "own": {}, "shared": {}, "defaults": {k: bd_settings.DEFAULTS[k] for k in SETTING_KEYS},
+                        "envOverrides": {}, "vaultFound": False, "vaultState": {},
+                        "paths": {"own": "", "shared": ""}})

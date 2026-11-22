@@ -97,8 +97,13 @@ Restart Hermes Desktop after installing. The panes appear in the right sidebar:
 
 ## Settings
 
-Settings ▸ Plugins ▸ Bot Dashboard, or `hermes config set
-plugins.entries.bot-dashboard.settings.<key> <value>`:
+Settings ▸ Plugins ▸ Bot Dashboard, the dashboard's own **Settings ▸ Vault & rules**
+window, or `hermes config set plugins.entries.bot-dashboard.settings.<key> <value>`.
+The window saves through Hermes, which locks `config.yaml`, checks each value
+against the plugin's `config_schema` and writes only the profile you choose:
+**This bot** or **All bots** (the default profile, which every bot falls back to).
+An empty value follows the shared one. The plugin itself never writes
+`config.yaml`, and the agent tools can read these settings but not change them.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -127,7 +132,7 @@ does not list it):
 
 | Tool | Scope |
 | --- | --- |
-| `bot_panel` | The bot's own pane: read the layout, add, update or remove a widget, write or pin a note, reorder or hide cards. |
+| `bot_panel` | The bot's own pane: read the layout, add, update or remove a widget, write or pin a note, manage task and project notes, read the focused chat's todo list, reorder or hide cards, and read (never change) the plugin's settings. |
 | `group_dashboard` | A group chat's pane: `list_groups`, then `view` (members, activity, tasks, projects, notes, widgets) or edit it — add a widget, leave a note, tidy the layout. Any member bot of that group can use it. |
 
 Both return JSON, never raise, and degrade to a plain error message when a file
@@ -165,8 +170,8 @@ links you can open with Enter, and status is never colour-only.
 
 ```bash
 hermes plugins validate .          # manifest, capabilities, surface checks
-python tests/test_robustness.py    # 49 backend checks
-python tests/test_tools.py         # 11 agent-tool checks
+python tests/test_robustness.py    # backend checks against a throwaway Hermes root
+python tests/test_tools.py         # agent-tool checks
 ```
 
 Layout:
@@ -174,9 +179,10 @@ Layout:
 ```
 plugin.yaml               manifest (name, version, declared tools and hooks)
 __init__.py               agent half: bot_panel + group_dashboard tools, pre_llm_call hook
-bd_settings.py            settings and paths (hermes_constants + config.yaml)
+bd_settings.py            settings and paths (hermes_constants + config.yaml, read-only)
 panel_store.py            per-bot panel storage (shared by the tool and the REST half)
-dashboard/plugin_api.py   REST half: /bot, /stamp, /groups, /group, /group/stamp, /task
+agent_api.py              in-process bridge from bot_panel to the REST functions
+dashboard/plugin_api.py   REST half: /bot, /stamp, /groups, /group, /group/stamp, /task, /settings (read-only)
 desktop/plugin.js         desktop half: the Bot and Group panes
 deploy.sh                 developer copy into the Hermes home and every profile
 ```

@@ -169,6 +169,24 @@ os.environ["BOT_DASHBOARD_VAULT_PATH"] = str(brain)
 (root / "config.yaml").write_text("plugins:\n  entries:\n    bot-dashboard:\n      settings:\n        projects_folder: Work\n", encoding="utf-8")
 import bd_settings as _bs  # noqa: E402
 check("config.yaml plugin settings are read", _bs.setting("projects_folder") == "Work" and _bs.projects_dir() == brain / "Work")
+# 8b. settings are read-only here: a per-bot view, and no route that writes config.yaml
+(root / "config.yaml").write_text("plugins:\n  entries:\n    bot-dashboard:\n      settings:\n        tasks_folder: Shared/Tasks\n        owner_field: shared-owner\n", encoding="utf-8")
+_own = root / "profiles" / "worker" / "config.yaml"
+_own_before = _own.read_text(encoding="utf-8") if _own.is_file() else None
+_own.write_text("plugins:\n  entries:\n    bot-dashboard:\n      settings:\n        tasks_folder: Own/Tasks\n", encoding="utf-8")
+j = c.get("/settings", params={"bot": "worker"}).json()
+check("GET /settings: own, shared and effective values",
+      j["own"] == {"tasks_folder": "Own/Tasks"} and j["shared"].get("owner_field") == "shared-owner"
+      and j["settings"]["tasks_folder"] == "Own/Tasks" and j["settings"]["owner_field"] == "shared-owner", j)
+check("GET /settings: the root bot has no separate own values", c.get("/settings", params={"bot": "hermes"}).json()["own"] == {})
+check("GET /settings: unknown bot -> 404", c.get("/settings", params={"bot": "ghost"}).status_code == 404)
+_shared_before = (root / "config.yaml").read_text(encoding="utf-8")
+check("no route writes config.yaml", c.post("/settings", json={"settings": {"vault_path": "x"}}).status_code in (404, 405)
+      and (root / "config.yaml").read_text(encoding="utf-8") == _shared_before)
+if _own_before is None:
+    _own.unlink()
+else:
+    _own.write_text(_own_before, encoding="utf-8")
 (root / "config.yaml").unlink()
 os.environ["HERMES_HOME"] = str(odd)
 

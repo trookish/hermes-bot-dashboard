@@ -64,13 +64,10 @@ def project_delete(file: str) -> dict:
     return a.delete_project(a.NoteFile(file=file))
 
 
-def settings_get() -> dict:
-    return api().settings_get()
-
-
-def settings_save(values: dict) -> dict:
-    a = api()
-    return a.settings_save(a.SettingsBody(settings=values))
+def settings_get(bot: str = "") -> dict:
+    """Read-only. Settings are changed by the user in the desktop settings window or
+    Settings > Plugins, which write through Hermes; the agent never writes them."""
+    return api().settings_get(bot=bot)
 
 
 def session_todos(bot: str, session: str = "", past: int = 8) -> dict:
